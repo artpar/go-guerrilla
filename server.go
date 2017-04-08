@@ -516,7 +516,7 @@ func (server *server) handleClient(client *client) {
 					client.sendResponse("235 Authentication succeeded")
 				}
 			} else {
-
+				client.sendResponse("535 5.7.0 Invalid login or password")
 			}
 			client.state = ClientCmd
 
