@@ -381,7 +381,18 @@ func (server *server) handleClient(client *client) {
 					client.sendResponse("500 5.5.1 Invalid command")
 				} else {
 					client.state = ClientLogin
+					client.authType = AuthLOGIN
 					client.sendResponse("334 VXNlcm5hbWU6")
+				}
+
+			case strings.Index(cmd, "AUTH CRAM-MD5") == 0:
+				if !sc.IsAuthTypeAllowed("CRAM-MD5") {
+					client.sendResponse("500 5.5.1 Invalid command")
+				} else {
+					client.authType = AuthCRAMMD5
+					client.state = ClientLogin
+					challenge := server.authenticator.GenerateCRAMMD5Challenge()
+					client.sendResponse("334 ", challenge)
 				}
 
 			case strings.Index(cmd, "HELP") == 0:
@@ -492,14 +503,25 @@ func (server *server) handleClient(client *client) {
 			}
 
 		case ClientLogin:
-			login, err := server.readCommand(client, sc.MaxSize)
-			if err != nil {
-				fmt.Errorf("Error reading login")
-			}
+			switch client.authType {
+			case AuthLOGIN:
+				login, err := server.readCommand(client, sc.MaxSize)
+				if err != nil {
+					fmt.Errorf("Error reading login")
+				}
 
-			client.login = login
-			client.state = ClientPassword
-			client.sendResponse("334 UGFzc3dvcmQ6")
+				client.login = login
+				client.state = ClientPassword
+				client.sendResponse("334 UGFzc3dvcmQ6")
+			case AuthCRAMMD5:
+				authString, err := server.readCommand(client, sc.MaxSize)
+				if err != nil {
+					fmt.Errorf("Error reading crammd5 auth string")
+				}
+				if server.authenticator.VerifyCRAMMD5(authString) {
+
+				}
+			}
 
 		case ClientPassword:
 			password, err := server.readCommand(client, sc.MaxSize)
@@ -516,7 +538,7 @@ func (server *server) handleClient(client *client) {
 					client.sendResponse("235 Authentication succeeded")
 				}
 			} else {
-				client.sendResponse("535 5.7.0 Invalid login or password")
+				client.sendResponse("535 5.7.8 Error: authentication failed:")
 			}
 			client.state = ClientCmd
 

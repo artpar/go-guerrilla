@@ -9,6 +9,7 @@ type Authenticator interface {
 	VerifyDIGESTMD5(login, password string) bool
 	VerifyMD5(login, password string) bool
 	VerifyCRAMMD5(login, password string) bool
+	GenerateCRAMMD5Challenge() string
 	DecodeLogin(login string) (string, error)
 
 	GetAdvertiseAuthentication(authType []string) string

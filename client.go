@@ -33,6 +33,13 @@ const (
 	ClientPassword
 )
 
+type AuthType int
+
+const (
+	AuthLOGIN = iota
+	AuthCRAMMD5
+)
+
 type client struct {
 	*mail.Envelope
 	ID          uint64
@@ -53,6 +60,7 @@ type client struct {
 	connGuard sync.Mutex
 	log       log.Logger
 	// authentication
+	authType AuthType
 	login    string
 	password string
 }
