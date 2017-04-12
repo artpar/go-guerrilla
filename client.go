@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
-	"github.com/flashmob/go-guerrilla/log"
-	"github.com/flashmob/go-guerrilla/mail"
 	"net"
 	"net/textproto"
 	"sync"
 	"time"
+
+	"github.com/flashmob/go-guerrilla/authenticators"
+	"github.com/flashmob/go-guerrilla/log"
+	"github.com/flashmob/go-guerrilla/mail"
 )
 
 // ClientState indicates which part of the SMTP transaction a given client is in.
@@ -60,9 +62,10 @@ type client struct {
 	connGuard sync.Mutex
 	log       log.Logger
 	// authentication
-	authType AuthType
-	login    string
-	password string
+	authType  AuthType
+	authStore authenticators.AuthStore
+	login     string
+	password  string
 }
 
 // NewClient allocates a new client.
