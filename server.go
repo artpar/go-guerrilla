@@ -376,7 +376,12 @@ func (server *server) handleClient(client *client) {
 					advertiseAuthType,
 					advertiseEnhancedStatusCodes,
 					help)
-
+				// .NET library fix
+			case strings.Index(cmd, "AUTH LOGIN USER:") == 0:
+				parts := strings.Split(cmd, "USER:")
+				client.login = parts[1]
+				client.state = ClientPassword
+				client.sendResponse("334 UGFzc3dvcmQ6")
 			case strings.Index(cmd, "AUTH LOGIN") == 0:
 				if !sc.IsAuthTypeAllowed("LOGIN") {
 					client.sendResponse("500 5.5.1 Invalid command")
