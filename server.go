@@ -376,7 +376,7 @@ func (server *server) handleClient(client *client) {
 					advertiseAuthType,
 					advertiseEnhancedStatusCodes,
 					help)
-				// .NET library fix - note the traling space
+				// .NET library fix - note the trailing space
 			case strings.Index(cmd, "AUTH LOGIN ") == 0:
 				client.login = input[len("AUTH LOGIN "):]
 				client.state = ClientPassword
