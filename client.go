@@ -27,6 +27,10 @@ const (
 	ClientStartTLS
 	// Server will shutdown, client to shutdown on next command turn
 	ClientShutdown
+	// We have to read login
+	ClientLogin
+	// We have to read password
+	ClientPassword
 )
 
 type client struct {
@@ -48,6 +52,9 @@ type client struct {
 	// guards access to conn
 	connGuard sync.Mutex
 	log       log.Logger
+	// authentication
+	login    string
+	password string
 }
 
 // NewClient allocates a new client.

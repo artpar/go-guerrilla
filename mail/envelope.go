@@ -83,6 +83,8 @@ type Envelope struct {
 	QueuedId string
 	// When locked, it means that the envelope is being processed by the backend
 	sync.Mutex
+	// to determine user
+	AuthorizedLogin string
 }
 
 func NewEnvelope(remoteAddr string, clientID uint64) *Envelope {
