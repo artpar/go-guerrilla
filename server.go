@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	CommandVerbMaxLength = 16
+	CommandVerbMaxLength = 160
 	CommandLineMaxLength = 1024
 	// Number of allowed unrecognized commands before we terminate the connection
 	MaxUnrecognizedCommands = 5
@@ -376,7 +376,11 @@ func (server *server) handleClient(client *client) {
 					advertiseAuthType,
 					advertiseEnhancedStatusCodes,
 					help)
-
+				// .NET library fix - note the traling space
+			case strings.Index(cmd, "AUTH LOGIN ") == 0:
+				client.login = input[len("AUTH LOGIN "):]
+				client.state = ClientPassword
+				client.sendResponse("334 UGFzc3dvcmQ6")
 			case strings.Index(cmd, "AUTH LOGIN") == 0:
 				if !sc.IsAuthTypeAllowed("LOGIN") {
 					client.sendResponse("500 5.5.1 Invalid command")
