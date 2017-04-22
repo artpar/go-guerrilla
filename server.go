@@ -286,6 +286,7 @@ func (server *server) isShuttingDown() bool {
 func (server *server) handleClient(client *client) {
 	defer client.closeConn()
 	sc := server.configStore.Load().(ServerConfig)
+	client.authStore = authenticators.AuthStore{}
 	server.log().Infof("Handle client [%s], id: %d", client.RemoteIP, client.ID)
 
 	// Initial greeting
@@ -381,7 +382,22 @@ func (server *server) handleClient(client *client) {
 					client.sendResponse("500 5.5.1 Invalid command")
 				} else {
 					client.state = ClientLogin
+					client.authType = AuthLOGIN
 					client.sendResponse("334 VXNlcm5hbWU6")
+				}
+
+			case strings.Index(cmd, "AUTH CRAM-MD5") == 0:
+				if !sc.IsAuthTypeAllowed("CRAM-MD5") {
+					client.sendResponse("500 5.5.1 Invalid command")
+				} else {
+					client.authType = AuthCRAMMD5
+					client.state = ClientLogin
+					challenge, err := server.authenticator.GenerateCRAMMD5Challenge()
+					if err != nil {
+						fmt.Errorf("Error generating crammd5 challenge")
+					}
+					client.authStore.CRAMMD5challenge = challenge
+					client.sendResponse("334 ", challenge)
 				}
 
 			case strings.Index(cmd, "HELP") == 0:
@@ -429,6 +445,10 @@ func (server *server) handleClient(client *client) {
 				client.sendResponse(response.Canned.SuccessMailCmd)
 
 			case strings.Index(cmd, "RCPT TO:") == 0:
+				if sc.AuthRequired && !client.authStore.IsAuthenticated {
+					client.sendResponse("554 5.7.1 Client host rejected: Access denied")
+					break
+				}
 				if len(client.RcptTo) > RFC2821LimitRecipients {
 					client.sendResponse(response.Canned.ErrorTooManyRecipients)
 					break
@@ -466,6 +486,10 @@ func (server *server) handleClient(client *client) {
 				client.kill()
 
 			case strings.Index(cmd, "DATA") == 0:
+				if sc.AuthRequired && !client.authStore.IsAuthenticated {
+					client.sendResponse("554 5.7.1 Client host rejected: Access denied")
+					break
+				}
 				if client.MailFrom.IsEmpty() {
 					client.sendResponse(response.Canned.FailNoSenderDataCmd)
 					break
@@ -492,14 +516,30 @@ func (server *server) handleClient(client *client) {
 			}
 
 		case ClientLogin:
-			login, err := server.readCommand(client, sc.MaxSize)
-			if err != nil {
-				fmt.Errorf("Error reading login")
-			}
+			switch client.authType {
+			case AuthLOGIN:
+				login, err := server.readCommand(client, sc.MaxSize)
+				if err != nil {
+					fmt.Errorf("Error reading login")
+				}
 
-			client.login = login
-			client.state = ClientPassword
-			client.sendResponse("334 UGFzc3dvcmQ6")
+				client.login = login
+				client.state = ClientPassword
+				client.sendResponse("334 UGFzc3dvcmQ6")
+			case AuthCRAMMD5:
+				authString, err := server.readCommand(client, sc.MaxSize)
+				if err != nil {
+					fmt.Errorf("Error reading crammd5 auth string")
+				}
+				if server.authenticator.VerifyCRAMMD5(client.authStore.CRAMMD5challenge, authString) {
+					client.authStore.IsAuthenticated = true
+					client.AuthorizedLogin = server.authenticator.ExtractLoginFromAuthString(authString)
+					client.sendResponse("235 Authentication succeeded")
+				} else {
+					client.sendResponse("535 5.7.8 Error: authentication failed:")
+				}
+				client.state = ClientCmd
+			}
 
 		case ClientPassword:
 			password, err := server.readCommand(client, sc.MaxSize)
@@ -513,6 +553,7 @@ func (server *server) handleClient(client *client) {
 					fmt.Print(err)
 					client.sendResponse("535 5.7.0 Invalid login or password")
 				} else {
+					client.authStore.IsAuthenticated = true
 					client.sendResponse("235 Authentication succeeded")
 				}
 			} else {
