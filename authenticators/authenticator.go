@@ -14,6 +14,8 @@ type Authenticator interface {
 	DecodeLogin(login string) (string, error)
 
 	GetAdvertiseAuthentication(authType []string) string
+
+	GetMailSize(login string, defaultSize int64) int64
 }
 
 type AuthenticatorCreator func(config backends.BackendConfig) Authenticator

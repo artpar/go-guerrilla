@@ -569,7 +569,8 @@ func (server *server) handleClient(client *client) {
 
 			// intentionally placed the limit 1MB above so that reading does not return with an error
 			// if the client goes a little over. Anything above will err
-			client.bufin.setLimit(int64(sc.MaxSize) + 1024000) // This a hard limit.
+			maxMailSize := int64(server.authenticator.GetMailSize(client.AuthorizedLogin, sc.MaxSize))
+			client.bufin.setLimit(maxMailSize + 1024000) // This a hard limit.
 
 			n, err := client.Data.ReadFrom(client.smtpReader.DotReader())
 			if n > sc.MaxSize {
