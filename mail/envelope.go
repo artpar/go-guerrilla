@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"gopkg.in/iconv.v1"
 	"io"
 	"io/ioutil"
 	"mime/quotedprintable"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-iconv/iconv"
 )
 
 const maxHeaderChunk = 1 + (3 << 10) // 3KB
