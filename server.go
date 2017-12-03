@@ -592,6 +592,8 @@ func (server *server) handleClient(client *client) {
 				break
 			}
 
+			client.Envelope.Values["listen_interface"] = server.listenInterface
+
 			res := server.backend().Process(client.Envelope)
 			if res.Code() < 300 {
 				client.messagesSent++
