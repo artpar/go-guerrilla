@@ -1,8 +1,8 @@
 package backends
 
 import (
-	"github.com/flashmob/go-guerrilla/log"
-	"github.com/flashmob/go-guerrilla/mail"
+	"github.com/jasonfriedland/go-guerrilla/log"
+	"github.com/jasonfriedland/go-guerrilla/mail"
 	"io/ioutil"
 	"os"
 	"strings"

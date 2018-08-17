@@ -20,9 +20,9 @@ import (
 
 	"time"
 
-	"github.com/flashmob/go-guerrilla"
-	"github.com/flashmob/go-guerrilla/backends"
-	"github.com/flashmob/go-guerrilla/log"
+	"github.com/jasonfriedland/go-guerrilla"
+	"github.com/jasonfriedland/go-guerrilla/backends"
+	"github.com/jasonfriedland/go-guerrilla/log"
 
 	"bufio"
 
@@ -35,7 +35,7 @@ import (
 
 	"os"
 
-	"github.com/flashmob/go-guerrilla/tests/testcert"
+	"github.com/jasonfriedland/go-guerrilla/tests/testcert"
 )
 
 type TestConfig struct {
@@ -86,7 +86,7 @@ var configJson = `
             "host_name":"mail.guerrillamail.com",
             "max_size": 100017,
             "timeout":160,
-            "listen_interface":"127.0.0.1:2526", 
+            "listen_interface":"127.0.0.1:2526",
             "max_clients": 2,
             "log_file" : "",
 			"tls" : {

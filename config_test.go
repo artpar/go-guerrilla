@@ -1,9 +1,9 @@
 package guerrilla
 
 import (
-	"github.com/flashmob/go-guerrilla/backends"
-	"github.com/flashmob/go-guerrilla/log"
-	"github.com/flashmob/go-guerrilla/tests/testcert"
+	"github.com/jasonfriedland/go-guerrilla/backends"
+	"github.com/jasonfriedland/go-guerrilla/log"
+	"github.com/jasonfriedland/go-guerrilla/tests/testcert"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -61,9 +61,9 @@ var configJsonA = `
         {
             "is_enabled" : true,
             "host_name":"mail.stopme.com",
-            "max_size": 100017, 
+            "max_size": 100017,
             "timeout":160,
-            "listen_interface":"127.0.0.1:9999", 
+            "listen_interface":"127.0.0.1:9999",
             "max_clients": 2,
 			"tls" : {
 				"private_key_file":"config_test.go",
@@ -79,7 +79,7 @@ var configJsonA = `
             "timeout":160,
             "listen_interface":"127.0.0.1:3333",
             "max_clients": 2,
-			"tls" : { 
+			"tls" : {
 				"private_key_file":"config_test.go",
             	"public_key_file":"config_test.go",
 				"start_tls_on":false,
