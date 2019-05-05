@@ -5,19 +5,14 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
-<<<<<<< HEAD
-	"github.com/jasonfriedland/go-guerrilla/log"
-	"github.com/jasonfriedland/go-guerrilla/mail"
-=======
->>>>>>> develhell/develmail
 	"net"
 	"net/textproto"
 	"sync"
 	"time"
 
-	"github.com/flashmob/go-guerrilla/authenticators"
-	"github.com/flashmob/go-guerrilla/log"
-	"github.com/flashmob/go-guerrilla/mail"
+	"github.com/jasonfriedland/go-guerrilla/authenticators"
+	"github.com/jasonfriedland/go-guerrilla/log"
+	"github.com/jasonfriedland/go-guerrilla/mail"
 )
 
 // ClientState indicates which part of the SMTP transaction a given client is in.
