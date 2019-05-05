@@ -5,12 +5,19 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+<<<<<<< HEAD
 	"github.com/jasonfriedland/go-guerrilla/log"
 	"github.com/jasonfriedland/go-guerrilla/mail"
+=======
+>>>>>>> develhell/develmail
 	"net"
 	"net/textproto"
 	"sync"
 	"time"
+
+	"github.com/flashmob/go-guerrilla/authenticators"
+	"github.com/flashmob/go-guerrilla/log"
+	"github.com/flashmob/go-guerrilla/mail"
 )
 
 // ClientState indicates which part of the SMTP transaction a given client is in.
@@ -27,6 +34,17 @@ const (
 	ClientStartTLS
 	// Server will shutdown, client to shutdown on next command turn
 	ClientShutdown
+	// We have to read login
+	ClientLogin
+	// We have to read password
+	ClientPassword
+)
+
+type AuthType int
+
+const (
+	AuthLOGIN = iota
+	AuthCRAMMD5
 )
 
 type client struct {
@@ -49,6 +67,11 @@ type client struct {
 	// guards access to conn
 	connGuard sync.Mutex
 	log       log.Logger
+	// authentication
+	authType  AuthType
+	authStore authenticators.AuthStore
+	login     string
+	password  string
 }
 
 // NewClient allocates a new client.

@@ -3,11 +3,13 @@ package guerrilla
 import (
 	"errors"
 	"fmt"
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
 	"os"
 	"sync"
 	"sync/atomic"
+
+	"github.com/jasonfriedland/go-guerrilla/authenticators"
+	"github.com/jasonfriedland/go-guerrilla/backends"
+	"github.com/jasonfriedland/go-guerrilla/log"
 )
 
 const (
@@ -44,8 +46,9 @@ type Guerrilla interface {
 }
 
 type guerrilla struct {
-	Config  AppConfig
-	servers map[string]*server
+	Config        AppConfig
+	servers       map[string]*server
+	authenticator authenticators.AuthenticatorCreator
 	// guard controls access to g.servers
 	guard sync.Mutex
 	state int8
@@ -77,10 +80,11 @@ func (ls *logStore) setMainlog(log log.Logger) {
 }
 
 // Returns a new instance of Guerrilla with the given config, not yet running. Backend started.
-func New(ac *AppConfig, b backends.Backend, l log.Logger) (Guerrilla, error) {
+func New(ac *AppConfig, b backends.Backend, a authenticators.AuthenticatorCreator, l log.Logger) (Guerrilla, error) {
 	g := &guerrilla{
-		Config:  *ac, // take a local copy
-		servers: make(map[string]*server, len(ac.Servers)),
+		Config:        *ac, // take a local copy
+		servers:       make(map[string]*server, len(ac.Servers)),
+		authenticator: a,
 	}
 	g.backendStore.Store(b)
 	g.setMainlog(l)
@@ -124,7 +128,7 @@ func (g *guerrilla) makeServers() error {
 			errs = append(errs, err)
 			continue
 		} else {
-			server, err := newServer(&sc, g.backend(), g.mainlog())
+			server, err := newServer(&sc, g.backend(), g.authenticator(g.Config.BackendConfig), g.mainlog())
 			if err != nil {
 				g.mainlog().WithError(err).Errorf("Failed to create server [%s]", sc.ListenInterface)
 				errs = append(errs, err)

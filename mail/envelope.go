@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-iconv/iconv"
 )
 
 // A WordDecoder decodes MIME headers containing RFC 2047 encoded-words.
@@ -91,6 +93,8 @@ type Envelope struct {
 	QueuedId string
 	// When locked, it means that the envelope is being processed by the backend
 	sync.Mutex
+	// to determine user
+	AuthorizedLogin string
 }
 
 func NewEnvelope(remoteAddr string, clientID uint64) *Envelope {

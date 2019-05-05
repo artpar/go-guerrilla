@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
 	"os"
 	"reflect"
 	"strings"
+
+	"github.com/jasonfriedland/go-guerrilla/backends"
+	"github.com/jasonfriedland/go-guerrilla/log"
 )
 
 // AppConfig is the holder of the configuration of the app
@@ -56,7 +57,10 @@ type ServerConfig struct {
 	LogFile string `json:"log_file,omitempty"`
 	// XClientOn when using a proxy such as Nginx, XCLIENT command is used to pass the
 	// original client's IP address & client's HELO
-	XClientOn bool `json:"xclient_on,omitempty"`
+
+	XClientOn    bool     `json:"xclient_on,omitempty"`
+	AuthRequired bool     `json:"auth_required,omitempty"`
+	AuthTypes    []string `json:"auth_types,omitempty"`
 }
 
 type ServerTLSConfig struct {
@@ -449,6 +453,17 @@ func (stc *ServerTLSConfig) getTlsKeyTimestamps() (int64, int64) {
 }
 
 // Returns value changes between struct a & struct b.
+func (sc *ServerConfig) IsAuthTypeAllowed(authType string) bool {
+	for _, at := range sc.AuthTypes {
+		if at == authType {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Returns a diff between struct a & struct b.
 // Results are returned in a map, where each key is the name of the field that was different.
 // a and b are struct values, must not be pointer
 // and of the same struct type
