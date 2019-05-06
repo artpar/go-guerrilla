@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-iconv/iconv"
 )
 
 // A WordDecoder decodes MIME headers containing RFC 2047 encoded-words.
