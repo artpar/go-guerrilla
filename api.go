@@ -8,9 +8,9 @@ import (
 	"io/ioutil"
 	"time"
 
-	"github.com/jasonfriedland/go-guerrilla/authenticators"
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/authenticators"
+	"github.com/artpar/go-guerrilla/backends"
+	"github.com/artpar/go-guerrilla/log"
 )
 
 // Daemon provides a convenient API when using go-guerrilla as a package in your Go project.

@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jasonfriedland/go-guerrilla"
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
-	test "github.com/jasonfriedland/go-guerrilla/tests"
-	"github.com/jasonfriedland/go-guerrilla/tests/testcert"
+	"github.com/artpar/go-guerrilla"
+	"github.com/artpar/go-guerrilla/backends"
+	"github.com/artpar/go-guerrilla/log"
+	test "github.com/artpar/go-guerrilla/tests"
+	"github.com/artpar/go-guerrilla/tests/testcert"
 	"github.com/spf13/cobra"
 )
 

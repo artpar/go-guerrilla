@@ -7,9 +7,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/jasonfriedland/go-guerrilla/authenticators"
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/authenticators"
+	"github.com/artpar/go-guerrilla/backends"
+	"github.com/artpar/go-guerrilla/log"
 )
 
 const (

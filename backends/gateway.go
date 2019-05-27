@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jasonfriedland/go-guerrilla/log"
-	"github.com/jasonfriedland/go-guerrilla/mail"
-	"github.com/jasonfriedland/go-guerrilla/response"
+	"github.com/artpar/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/response"
 	"runtime/debug"
 	"strings"
 )

@@ -3,8 +3,8 @@ package backends
 import (
 	"bytes"
 	"fmt"
-	"github.com/jasonfriedland/go-guerrilla/log"
-	"github.com/jasonfriedland/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/mail"
 	"reflect"
 	"strconv"
 	"strings"

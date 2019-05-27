@@ -7,7 +7,7 @@ package encoding
 import (
 	"io"
 
-	"github.com/jasonfriedland/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/mail"
 	cs "golang.org/x/net/html/charset"
 )
 

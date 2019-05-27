@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jasonfriedland/go-guerrilla/authenticators"
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
-	"github.com/jasonfriedland/go-guerrilla/mail"
-	"github.com/jasonfriedland/go-guerrilla/response"
+	"github.com/artpar/go-guerrilla/authenticators"
+	"github.com/artpar/go-guerrilla/backends"
+	"github.com/artpar/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/response"
 )
 
 const (

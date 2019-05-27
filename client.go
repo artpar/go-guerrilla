@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jasonfriedland/go-guerrilla/authenticators"
-	"github.com/jasonfriedland/go-guerrilla/log"
-	"github.com/jasonfriedland/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/authenticators"
+	"github.com/artpar/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/mail"
 )
 
 // ClientState indicates which part of the SMTP transaction a given client is in.

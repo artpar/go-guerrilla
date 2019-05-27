@@ -20,9 +20,9 @@ import (
 
 	"time"
 
-	"github.com/jasonfriedland/go-guerrilla"
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla"
+	"github.com/artpar/go-guerrilla/backends"
+	"github.com/artpar/go-guerrilla/log"
 
 	"bufio"
 
@@ -35,7 +35,7 @@ import (
 
 	"os"
 
-	"github.com/jasonfriedland/go-guerrilla/tests/testcert"
+	"github.com/artpar/go-guerrilla/tests/testcert"
 )
 
 type TestConfig struct {

@@ -1,9 +1,9 @@
 package guerrilla
 
 import (
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
-	"github.com/jasonfriedland/go-guerrilla/tests/testcert"
+	"github.com/artpar/go-guerrilla/backends"
+	"github.com/artpar/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/tests/testcert"
 	"io/ioutil"
 	"os"
 	"strings"

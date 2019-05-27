@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/jasonfriedland/go-guerrilla/backends"
-	"github.com/jasonfriedland/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/backends"
+	"github.com/artpar/go-guerrilla/log"
 )
 
 // AppConfig is the holder of the configuration of the app

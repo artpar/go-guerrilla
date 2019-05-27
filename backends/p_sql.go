@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jasonfriedland/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/mail"
 
 	"math/big"
 	"net"
 	"runtime/debug"
 
-	"github.com/jasonfriedland/go-guerrilla/response"
+	"github.com/artpar/go-guerrilla/response"
 )
 
 // ----------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-package: github.com/jasonfriedland/go-guerrilla
+package: github.com/artpar/go-guerrilla
 import:
 - package: github.com/sirupsen/logrus
   version: ~1.0.4

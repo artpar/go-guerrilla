@@ -1,7 +1,7 @@
 package iconv
 
 import (
-	"github.com/jasonfriedland/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/mail"
 	"strings"
 	"testing"
 )

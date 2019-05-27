@@ -1,8 +1,8 @@
 package backends
 
 import (
-	"github.com/jasonfriedland/go-guerrilla/log"
-	"github.com/jasonfriedland/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/log"
+	"github.com/artpar/go-guerrilla/mail"
 	"io/ioutil"
 	"os"
 	"strings"

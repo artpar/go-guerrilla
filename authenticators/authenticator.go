@@ -1,6 +1,6 @@
 package authenticators
 
-import "github.com/jasonfriedland/go-guerrilla/backends"
+import "github.com/artpar/go-guerrilla/backends"
 
 type Authenticator interface {
 	VerifyLOGIN(login, password string) bool
