@@ -3,7 +3,6 @@ package mocks
 import (
 	"fmt"
 	"net/smtp"
-	"time"
 )
 
 const (
@@ -12,16 +11,6 @@ const (
 
 func lastWords(message string, err error) {
 	fmt.Println(message, err.Error())
-	return
-	// panic(err)
-}
-
-// Sends a single SMTP message, for testing.
-func main() {
-	for i := 0; i < 100; i++ {
-		go sendMail(i)
-	}
-	time.Sleep(time.Minute / 10)
 }
 
 func sendMail(i int) {
@@ -30,7 +19,9 @@ func sendMail(i int) {
 	if err != nil {
 		lastWords("Dial ", err)
 	}
-	defer c.Close()
+	defer func() {
+		_ = c.Close()
+	}()
 
 	from := "somebody@gmail.com"
 	to := "somebody.else@gmail.com"
@@ -47,7 +38,9 @@ func sendMail(i int) {
 	if err != nil {
 		lastWords("Data ", err)
 	}
-	defer wr.Close()
+	defer func() {
+		_ = wr.Close()
+	}()
 
 	msg := fmt.Sprint("Subject: something\n")
 	msg += "From: " + from + "\n"

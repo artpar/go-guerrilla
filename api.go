@@ -33,8 +33,6 @@ type deferredSub struct {
 	fn    interface{}
 }
 
-const defaultInterface = "127.0.0.1:2525"
-
 // AddProcessor adds a processor constructor to the backend.
 // name is the identifier to be used in the config. See backends docs for more info.
 func (d *Daemon) AddProcessor(name string, pc backends.ProcessorConstructor) {
@@ -72,7 +70,7 @@ func (d *Daemon) Start() (err error) {
 			return err
 		}
 		for i := range d.subs {
-			d.Subscribe(d.subs[i].topic, d.subs[i].fn)
+			_ = d.Subscribe(d.subs[i].topic, d.subs[i].fn)
 
 		}
 		d.subs = make([]deferredSub, 0)
@@ -137,10 +135,10 @@ func (d *Daemon) ReloadConfig(c AppConfig) error {
 	if err != nil {
 		d.Log().WithError(err).Error("Error while reloading config")
 		return err
-	} else {
-		d.Log().Infof("Configuration was reloaded at %s", d.configLoadTime)
-		d.Config.EmitChangeEvents(&oldConfig, d.g)
 	}
+	d.Log().Infof("Configuration was reloaded at %s", d.configLoadTime)
+	d.Config.EmitChangeEvents(&oldConfig, d.g)
+
 	return nil
 }
 
@@ -172,10 +170,10 @@ func (d *Daemon) ReopenLogs() error {
 // Subscribe for subscribing to config change events
 func (d *Daemon) Subscribe(topic Event, fn interface{}) error {
 	if d.g == nil {
+		// defer the subscription until the daemon is started
 		d.subs = append(d.subs, deferredSub{topic, fn})
 		return nil
 	}
-
 	return d.g.Subscribe(topic, fn)
 }
 

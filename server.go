@@ -1,10 +1,12 @@
 package guerrilla
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"io"
 	"io/ioutil"
 	"net"
@@ -18,6 +20,7 @@ import (
 	"github.com/artpar/go-guerrilla/backends"
 	"github.com/artpar/go-guerrilla/log"
 	"github.com/artpar/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/mail/rfc5321"
 	"github.com/artpar/go-guerrilla/response"
 )
 
@@ -26,14 +29,6 @@ const (
 	CommandLineMaxLength = 1024
 	// Number of allowed unrecognized commands before we terminate the connection
 	MaxUnrecognizedCommands = 5
-	// The maximum total length of a reverse-path or forward-path is 256
-	RFC2821LimitPath = 256
-	// The maximum total length of a user name or other local-part is 64
-	RFC2832LimitLocalPart = 64
-	//The maximum total length of a domain name or number is 255
-	RFC2821LimitDomain = 255
-	// The minimum total number of recipients that must be buffered is 100
-	RFC2821LimitRecipients = 100
 )
 
 const (
@@ -56,7 +51,7 @@ type server struct {
 	clientPool      *Pool
 	wg              sync.WaitGroup // for waiting to shutdown
 	listener        net.Listener
-	closedListener  chan (bool)
+	closedListener  chan bool
 	hosts           allowedHosts // stores map[string]bool for faster lookup
 	state           int
 	// If log changed after a config reload, newLogStore stores the value here until it's safe to change it
@@ -73,39 +68,61 @@ type allowedHosts struct {
 	sync.Mutex                 // guard access to the map
 }
 
+type command []byte
+
+var (
+	cmdHELO     command = []byte("HELO")
+	cmdEHLO     command = []byte("EHLO")
+	cmdHELP     command = []byte("HELP")
+	cmdXCLIENT  command = []byte("XCLIENT")
+	cmdMAIL     command = []byte("MAIL FROM:")
+	cmdRCPT     command = []byte("RCPT TO:")
+	cmdRSET     command = []byte("RSET")
+	cmdVRFY     command = []byte("VRFY")
+	cmdNOOP     command = []byte("NOOP")
+	cmdQUIT     command = []byte("QUIT")
+	cmdDATA     command = []byte("DATA")
+	cmdSTARTTLS command = []byte("STARTTLS")
+)
+
+func (c command) match(in []byte) bool {
+	return bytes.Index(in, []byte(c)) == 0
+}
+
 // Creates and returns a new ready-to-run Server from a configuration
-func newServer(sc *ServerConfig, b backends.Backend, a authenticators.Authenticator, l log.Logger) (*server, error) {
+func newServer(sc *ServerConfig, b backends.Backend, a authenticators.Authenticator, mainlog log.Logger) (*server, error) {
 	server := &server{
 		clientPool:      NewPool(sc.MaxClients),
-		closedListener:  make(chan (bool), 1),
+		closedListener:  make(chan bool, 1),
 		listenInterface: sc.ListenInterface,
 		state:           ServerStateNew,
 		envelopePool:    mail.NewPool(sc.MaxClients),
 		authenticator:   a,
 	}
-	server.logStore.Store(l)
-	server.backendStore.Store(b)
-	logFile := sc.LogFile
-	if logFile == "" {
-		// none set, use the same log file as mainlog
-		logFile = server.mainlog().GetLogDest()
-	}
-	// set level to same level as mainlog level
-	mainlog, logOpenError := log.GetLogger(logFile, server.mainlog().GetLevel())
 	server.mainlogStore.Store(mainlog)
-	if logOpenError != nil {
-		server.log().WithError(logOpenError).Errorf("Failed creating a logger for server [%s]", sc.ListenInterface)
+	server.backendStore.Store(b)
+	if sc.LogFile == "" {
+		// none set, use the mainlog for the server log
+		server.logStore.Store(mainlog)
+		server.log().Info("server [" + sc.ListenInterface + "] did not configure a separate log file, so using the main log")
+	} else {
+		// set level to same level as mainlog level
+		if l, logOpenError := log.GetLogger(sc.LogFile, server.mainlog().GetLevel()); logOpenError != nil {
+			server.log().WithError(logOpenError).Errorf("Failed creating a logger for server [%s]", sc.ListenInterface)
+			return server, logOpenError
+		} else {
+			server.logStore.Store(l)
+		}
 	}
-
 	server.setConfig(sc)
 	server.setTimeout(sc.Timeout)
-	if err := server.configureSSL(); err != nil {
+	if err := server.configureTLS(); err != nil {
 		return server, err
 	}
 	return server, nil
 }
 
-func (s *server) configureSSL() error {
+func (s *server) configureTLS() error {
 	sConfig := s.configStore.Load().(ServerConfig)
 	if sConfig.TLS.AlwaysOn || sConfig.TLS.StartTLSOn {
 		cert, err := tls.LoadX509KeyPair(sConfig.TLS.PublicKeyFile, sConfig.TLS.PrivateKeyFile)
@@ -178,127 +195,132 @@ func (s *server) backend() backends.Backend {
 }
 
 // Set the timeout for the server and all clients
-func (server *server) setTimeout(seconds int) {
+func (s *server) setTimeout(seconds int) {
 	duration := time.Duration(int64(seconds))
-	server.clientPool.SetTimeout(duration)
-	server.timeout.Store(duration)
+	s.clientPool.SetTimeout(duration)
+	s.timeout.Store(duration)
 }
 
 // goroutine safe config store
-func (server *server) setConfig(sc *ServerConfig) {
-	server.configStore.Store(*sc)
+func (s *server) setConfig(sc *ServerConfig) {
+	s.configStore.Store(*sc)
 }
 
 // goroutine safe
-func (server *server) isEnabled() bool {
-	sc := server.configStore.Load().(ServerConfig)
+func (s *server) isEnabled() bool {
+	sc := s.configStore.Load().(ServerConfig)
 	return sc.IsEnabled
 }
 
 // Set the allowed hosts for the server
-func (server *server) setAllowedHosts(allowedHosts []string) {
-	server.hosts.Lock()
-	defer server.hosts.Unlock()
-	server.hosts.table = make(map[string]bool, len(allowedHosts))
-	server.hosts.wildcards = nil
+func (s *server) setAllowedHosts(allowedHosts []string) {
+	s.hosts.Lock()
+	defer s.hosts.Unlock()
+	s.hosts.table = make(map[string]bool, len(allowedHosts))
+	s.hosts.wildcards = nil
 	for _, h := range allowedHosts {
-		if strings.Index(h, "*") != -1 {
-			server.hosts.wildcards = append(server.hosts.wildcards, strings.ToLower(h))
+		if strings.Contains(h, "*") {
+			s.hosts.wildcards = append(s.hosts.wildcards, strings.ToLower(h))
+		} else if len(h) > 5 && h[0] == '[' && h[len(h)-1] == ']' {
+			if ip := net.ParseIP(h[1 : len(h)-1]); ip != nil {
+				// this will save the normalized ip, as ip.String always returns ipv6 in short form
+				s.hosts.table["["+ip.String()+"]"] = true
+			}
 		} else {
-			server.hosts.table[strings.ToLower(h)] = true
+			s.hosts.table[strings.ToLower(h)] = true
 		}
 	}
 }
 
 // Begin accepting SMTP clients. Will block unless there is an error or server.Shutdown() is called
-func (server *server) Start(startWG *sync.WaitGroup) error {
+func (s *server) Start(startWG *sync.WaitGroup) error {
 	var clientID uint64
 	clientID = 0
 
-	listener, err := net.Listen("tcp", server.listenInterface)
-	server.listener = listener
+	listener, err := net.Listen("tcp", s.listenInterface)
+	s.listener = listener
 	if err != nil {
 		startWG.Done() // don't wait for me
-		server.state = ServerStateStartError
-		return fmt.Errorf("[%s] Cannot listen on port: %s ", server.listenInterface, err.Error())
+		s.state = ServerStateStartError
+		return fmt.Errorf("[%s] Cannot listen on port: %s ", s.listenInterface, err.Error())
 	}
 
-	server.log().Infof("Listening on TCP %s", server.listenInterface)
-	server.state = ServerStateRunning
+	s.log().Infof("Listening on TCP %s", s.listenInterface)
+	s.state = ServerStateRunning
 	startWG.Done() // start successful, don't wait for me
 
 	for {
-		server.log().Debugf("[%s] Waiting for a new client. Next Client ID: %d", server.listenInterface, clientID+1)
+		s.log().Debugf("[%s] Waiting for a new client. Next Client ID: %d", s.listenInterface, clientID+1)
 		conn, err := listener.Accept()
 		clientID++
 		if err != nil {
 			if e, ok := err.(net.Error); ok && !e.Temporary() {
-				server.log().Infof("Server [%s] has stopped accepting new clients", server.listenInterface)
+				s.log().Infof("Server [%s] has stopped accepting new clients", s.listenInterface)
 				// the listener has been closed, wait for clients to exit
-				server.log().Infof("shutting down pool [%s]", server.listenInterface)
-				server.clientPool.ShutdownState()
-				server.clientPool.ShutdownWait()
-				server.state = ServerStateStopped
-				server.closedListener <- true
+				s.log().Infof("shutting down pool [%s]", s.listenInterface)
+				s.clientPool.ShutdownState()
+				s.clientPool.ShutdownWait()
+				s.state = ServerStateStopped
+				s.closedListener <- true
 				return nil
 			}
-			server.mainlog().WithError(err).Info("Temporary error accepting client")
+			s.mainlog().WithError(err).Info("Temporary error accepting client")
 			continue
 		}
-		go func(p Poolable, borrow_err error) {
+		go func(p Poolable, borrowErr error) {
 			c := p.(*client)
-			if borrow_err == nil {
-				server.handleClient(c)
-				server.envelopePool.Return(c.Envelope)
-				server.clientPool.Return(c)
+			if borrowErr == nil {
+				s.handleClient(c)
+				s.envelopePool.Return(c.Envelope)
+				s.clientPool.Return(c)
 			} else {
-				server.log().WithError(borrow_err).Info("couldn't borrow a new client")
+				s.log().WithError(borrowErr).Info("couldn't borrow a new client")
 				// we could not get a client, so close the connection.
-				conn.Close()
+				_ = conn.Close()
 
 			}
 			// intentionally placed Borrow in args so that it's called in the
 			// same main goroutine.
-		}(server.clientPool.Borrow(conn, clientID, server.log(), server.envelopePool))
+		}(s.clientPool.Borrow(conn, clientID, s.log(), s.envelopePool))
 
 	}
 }
 
-func (server *server) Shutdown() {
-	if server.listener != nil {
+func (s *server) Shutdown() {
+	if s.listener != nil {
 		// This will cause Start function to return, by causing an error on listener.Accept
-		server.listener.Close()
+		_ = s.listener.Close()
 		// wait for the listener to listener.Accept
-		<-server.closedListener
+		<-s.closedListener
 		// At this point Start will exit and close down the pool
 	} else {
-		server.clientPool.ShutdownState()
+		s.clientPool.ShutdownState()
 		// listener already closed, wait for clients to exit
-		server.clientPool.ShutdownWait()
-		server.state = ServerStateStopped
+		s.clientPool.ShutdownWait()
+		s.state = ServerStateStopped
 	}
 }
 
-func (server *server) GetActiveClientsCount() int {
-	return server.clientPool.GetActiveClientsCount()
+func (s *server) GetActiveClientsCount() int {
+	return s.clientPool.GetActiveClientsCount()
 }
 
 // Verifies that the host is a valid recipient.
 // host checking turned off if there is a single entry and it's a dot.
-func (server *server) allowsHost(host string) bool {
-	server.hosts.Lock()
-	defer server.hosts.Unlock()
+func (s *server) allowsHost(host string) bool {
+	s.hosts.Lock()
+	defer s.hosts.Unlock()
 	// if hosts contains a single dot, further processing is skipped
-	if len(server.hosts.table) == 1 {
-		if _, ok := server.hosts.table["."]; ok {
+	if len(s.hosts.table) == 1 {
+		if _, ok := s.hosts.table["."]; ok {
 			return true
 		}
 	}
-	if _, ok := server.hosts.table[strings.ToLower(host)]; ok {
+	if _, ok := s.hosts.table[strings.ToLower(host)]; ok {
 		return true
 	}
-	// check the willdcards
-	for _, w := range server.hosts.wildcards {
+	// check the wildcards
+	for _, w := range s.hosts.wildcards {
 		if matched, err := filepath.Match(w, strings.ToLower(host)); matched && err == nil {
 			return true
 		}
@@ -306,50 +328,53 @@ func (server *server) allowsHost(host string) bool {
 	return false
 }
 
-// Reads from the client until a terminating sequence is encountered,
+func (s *server) allowsIp(ip net.IP) bool {
+	ipStr := ip.String()
+	return s.allowsHost("[" + ipStr + "]")
+}
+
+const commandSuffix = "\r\n"
+
+// Reads from the client until a \n terminator is encountered,
 // or until a timeout occurs.
-func (server *server) readCommand(client *client, maxSize int64) (string, error) {
-	var input, reply string
+func (s *server) readCommand(client *client, maxSize int64) ([]byte, error) {
+	//var input string
 	var err error
+	var bs []byte
 	// In command state, stop reading at line breaks
-	suffix := "\r\n"
-	for {
-		client.setTimeout(server.timeout.Load().(time.Duration))
-		reply, err = client.bufin.ReadString('\n')
-		input = input + reply
-		if err != nil {
-			break
-		}
-		if strings.HasSuffix(input, suffix) {
-			// discard the suffix and stop reading
-			input = input[0 : len(input)-len(suffix)]
-			break
-		}
+	_ = client.setTimeout(s.timeout.Load().(time.Duration))
+	bs, err = client.bufin.ReadSlice('\n')
+	if err != nil {
+		return bs, err
+	} else if bytes.HasSuffix(bs, []byte(commandSuffix)) {
+		return bs[:len(bs)-2], err
 	}
-	return input, err
+	return bs[:len(bs)-1], err
 }
 
 // flushResponse a response to the client. Flushes the client.bufout buffer to the connection
-func (server *server) flushResponse(client *client) error {
-	client.setTimeout(server.timeout.Load().(time.Duration))
+func (s *server) flushResponse(client *client) error {
+	if err := client.setTimeout(s.timeout.Load().(time.Duration)); err != nil {
+		return err
+	}
 	return client.bufout.Flush()
 }
 
-func (server *server) isShuttingDown() bool {
-	return server.clientPool.IsShuttingDown()
+func (s *server) isShuttingDown() bool {
+	return s.clientPool.IsShuttingDown()
 }
 
 // Handles an entire client SMTP exchange
-func (server *server) handleClient(client *client) {
+func (s *server) handleClient(client *client) {
 	defer client.closeConn()
-	sc := server.configStore.Load().(ServerConfig)
+	sc := s.configStore.Load().(ServerConfig)
 	client.authStore = authenticators.AuthStore{}
-	server.log().Infof("Handle client [%s], id: %d", client.RemoteIP, client.ID)
+	s.log().Infof("Handle client [%s], id: %d", client.RemoteIP, client.ID)
 
 	// Initial greeting
 	greeting := fmt.Sprintf("220 %s SMTP Guerrilla(%s) #%d (%d) %s",
 		sc.Hostname, Version, client.ID,
-		server.clientPool.GetActiveClientsCount(), time.Now().Format(time.RFC3339))
+		s.clientPool.GetActiveClientsCount(), time.Now().Format(time.RFC3339))
 
 	helo := fmt.Sprintf("250 %s Hello", sc.Hostname)
 	// ehlo is a multi-line reply and need additional \r\n at the end
@@ -363,16 +388,16 @@ func (server *server) handleClient(client *client) {
 	// The last line doesn't need \r\n since string will be printed as a new line.
 	// Also, Last line has no dash -
 	help := "250 HELP"
-	advertiseAuthType := server.authenticator.GetAdvertiseAuthentication(sc.AuthTypes)
+	advertiseAuthType := s.authenticator.GetAdvertiseAuthentication(sc.AuthTypes)
 
 	if sc.TLS.AlwaysOn {
-		tlsConfig, ok := server.tlsConfigStore.Load().(*tls.Config)
+		tlsConfig, ok := s.tlsConfigStore.Load().(*tls.Config)
 		if !ok {
-			server.mainlog().Error("Failed to load *tls.Config")
+			s.mainlog().Error("Failed to load *tls.Config")
 		} else if err := client.upgradeToTLS(tlsConfig); err == nil {
 			advertiseTLS = ""
 		} else {
-			server.log().WithError(err).Warnf("[%s] Failed TLS handshake", client.RemoteIP)
+			s.log().WithError(err).Warnf("[%s] Failed TLS handshake", client.RemoteIP)
 			// server requires TLS, but can't handshake
 			client.kill()
 		}
@@ -381,7 +406,7 @@ func (server *server) handleClient(client *client) {
 		// STARTTLS turned off, don't advertise it
 		advertiseTLS = ""
 	}
-
+	r := response.Canned
 	for client.isAlive() {
 		switch client.state {
 		case ClientGreeting:
@@ -389,42 +414,56 @@ func (server *server) handleClient(client *client) {
 			client.state = ClientCmd
 		case ClientCmd:
 			client.bufin.setLimit(CommandLineMaxLength)
-			input, err := server.readCommand(client, sc.MaxSize)
-			server.log().Debugf("Client sent: %s", input)
+			input, err := s.readCommand(client, sc.MaxSize)
+			s.log().Debugf("Client sent: %s", string(input))
 			if err == io.EOF {
-				server.log().WithError(err).Warnf("Client closed the connection: %s", client.RemoteIP)
+				s.log().WithError(err).Warnf("Client closed the connection: %s", client.RemoteIP)
 				return
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				server.log().WithError(err).Warnf("Timeout: %s", client.RemoteIP)
+				s.log().WithError(err).Warnf("Timeout: %s", client.RemoteIP)
 				return
 			} else if err == LineLimitExceeded {
-				client.sendResponse(response.Canned.FailLineTooLong)
+				client.sendResponse(r.FailLineTooLong)
 				client.kill()
 				break
 			} else if err != nil {
-				server.log().WithError(err).Warnf("Read error: %s", client.RemoteIP)
+				s.log().WithError(err).Warnf("Read error: %s", client.RemoteIP)
 				client.kill()
 				break
 			}
-			if server.isShuttingDown() {
+			if s.isShuttingDown() {
 				client.state = ClientShutdown
 				continue
 			}
 
-			input = strings.Trim(input, " \r\n")
 			cmdLen := len(input)
 			if cmdLen > CommandVerbMaxLength {
 				cmdLen = CommandVerbMaxLength
 			}
-			cmd := strings.ToUpper(input[:cmdLen])
+			cmd := bytes.ToUpper(input[:cmdLen])
+			cmdString := string(cmd)
 			switch {
-			case strings.Index(cmd, "HELO") == 0:
-				client.Helo = strings.Trim(input[4:], " ")
+			case cmdHELO.match(cmd):
+				if h, err := client.parser.Helo(input[4:]); err == nil {
+					client.Helo = h
+				} else {
+					s.log().WithFields(logrus.Fields{"helo": h, "client": client.ID}).Warn("invalid helo")
+					client.sendResponse(r.FailSyntaxError)
+					break
+				}
 				client.resetTransaction()
 				client.sendResponse(helo)
 
-			case strings.Index(cmd, "EHLO") == 0:
-				client.Helo = strings.Trim(input[4:], " ")
+			case cmdEHLO.match(cmd):
+				if h, _, err := client.parser.Ehlo(input[4:]); err == nil {
+					client.Helo = h
+				} else {
+					client.sendResponse(r.FailSyntaxError)
+					s.log().WithFields(logrus.Fields{"ehlo": h, "client": client.ID}).Warn("invalid ehlo")
+					client.sendResponse(r.FailSyntaxError)
+					break
+				}
+				client.ESMTP = true
 				client.resetTransaction()
 				client.sendResponse(ehlo,
 					messageSize,
@@ -434,11 +473,11 @@ func (server *server) handleClient(client *client) {
 					advertiseEnhancedStatusCodes,
 					help)
 				// .NET library fix - note the trailing space
-			case strings.Index(cmd, "AUTH LOGIN ") == 0:
-				client.login = input[len("AUTH LOGIN "):]
+			case strings.Index(cmdString, "AUTH LOGIN ") == 0:
+				client.login = cmdString[len("AUTH LOGIN "):]
 				client.state = ClientPassword
 				client.sendResponse("334 UGFzc3dvcmQ6")
-			case strings.Index(cmd, "AUTH LOGIN") == 0:
+			case strings.Index(cmdString, "AUTH LOGIN") == 0:
 				if !sc.IsAuthTypeAllowed("LOGIN") {
 					client.sendResponse("500 5.5.1 Invalid command")
 				} else {
@@ -447,106 +486,102 @@ func (server *server) handleClient(client *client) {
 					client.sendResponse("334 VXNlcm5hbWU6")
 				}
 
-			case strings.Index(cmd, "AUTH CRAM-MD5") == 0:
+			case strings.Index(cmdString, "AUTH CRAM-MD5") == 0:
 				if !sc.IsAuthTypeAllowed("CRAM-MD5") {
 					client.sendResponse("500 5.5.1 Invalid command")
 				} else {
 					client.authType = AuthCRAMMD5
 					client.state = ClientLogin
-					challenge, err := server.authenticator.GenerateCRAMMD5Challenge()
+					challenge, err := s.authenticator.GenerateCRAMMD5Challenge()
 					if err != nil {
-						fmt.Errorf("Error generating crammd5 challenge")
+						err = fmt.Errorf("Error generating crammd5 challenge: %v", err)
 					}
 					client.authStore.CRAMMD5challenge = challenge
 					client.sendResponse("334 ", challenge)
 				}
 
-			case strings.Index(cmd, "HELP") == 0:
+			case cmdHELP.match(cmd):
 				quote := response.GetQuote()
 				client.sendResponse("214-OK\r\n", quote)
 
-			case sc.XClientOn && strings.Index(cmd, "XCLIENT ") == 0:
-				if toks := strings.Split(input[8:], " "); len(toks) > 0 {
+			case sc.XClientOn && cmdXCLIENT.match(cmd):
+				if toks := bytes.Split(input[8:], []byte{' '}); len(toks) > 0 {
 					for i := range toks {
-						if vals := strings.Split(toks[i], "="); len(vals) == 2 {
-							if vals[1] == "[UNAVAILABLE]" {
+						if vals := bytes.Split(toks[i], []byte{'='}); len(vals) == 2 {
+							if bytes.Equal(vals[1], []byte("[UNAVAILABLE]")) {
 								// skip
 								continue
 							}
-							if vals[0] == "ADDR" {
-								client.RemoteIP = vals[1]
+							if bytes.Equal(vals[0], []byte("ADDR")) {
+								client.RemoteIP = string(vals[1])
 							}
-							if vals[0] == "HELO" {
-								client.Helo = vals[1]
+							if bytes.Equal(vals[0], []byte("HELO")) {
+								client.Helo = string(vals[1])
 							}
 						}
 					}
 				}
-				client.sendResponse(response.Canned.SuccessMailCmd)
-			case strings.Index(cmd, "MAIL FROM:") == 0:
+				client.sendResponse(r.SuccessMailCmd)
+			case cmdMAIL.match(cmd):
 				if client.isInTransaction() {
-					client.sendResponse(response.Canned.FailNestedMailCmd)
+					client.sendResponse(r.FailNestedMailCmd)
 					break
 				}
-				addr := input[10:]
-				if !(strings.Index(addr, "<>") == 0) &&
-					!(strings.Index(addr, " <>") == 0) {
-					// Not Bounce, extract mail.
-					if from, err := extractEmail(addr); err != nil {
-						client.sendResponse(err)
-						break
-					} else {
-						client.MailFrom = from
-					}
-
-				} else {
+				client.MailFrom, err = client.parsePath(input[10:], client.parser.MailFrom)
+				if err != nil {
+					s.log().WithError(err).Error("MAIL parse error", "["+string(input[10:])+"]")
+					client.sendResponse(err)
+					break
+				} else if client.parser.NullPath {
 					// bounce has empty from address
 					client.MailFrom = mail.Address{}
 				}
-				client.sendResponse(response.Canned.SuccessMailCmd)
+				client.sendResponse(r.SuccessMailCmd)
 
-			case strings.Index(cmd, "RCPT TO:") == 0:
+			case cmdRCPT.match(cmd):
 				if sc.AuthRequired && !client.authStore.IsAuthenticated {
 					client.sendResponse("554 5.7.1 Client host rejected: Access denied")
 					break
 				}
-				if len(client.RcptTo) > RFC2821LimitRecipients {
-					client.sendResponse(response.Canned.ErrorTooManyRecipients)
+				if len(client.RcptTo) > rfc5321.LimitRecipients {
+					client.sendResponse(r.ErrorTooManyRecipients)
 					break
 				}
-				to, err := extractEmail(input[8:])
+				to, err := client.parsePath(input[8:], client.parser.RcptTo)
 				if err != nil {
+					s.log().WithError(err).Error("RCPT parse error", "["+string(input[8:])+"]")
 					client.sendResponse(err.Error())
+					break
+				}
+				s.defaultHost(&to)
+				if (to.IP != nil && !s.allowsIp(to.IP)) || (to.IP == nil && !s.allowsHost(to.Host)) {
+					client.sendResponse(r.ErrorRelayDenied, " ", to.Host)
 				} else {
-					if !server.allowsHost(to.Host) {
-						client.sendResponse(response.Canned.ErrorRelayDenied, " ", to.Host)
+					client.PushRcpt(to)
+					rcptError := s.backend().ValidateRcpt(client.Envelope)
+					if rcptError != nil {
+						client.PopRcpt()
+						client.sendResponse(r.FailRcptCmd, " ", rcptError.Error())
 					} else {
-						client.PushRcpt(to)
-						rcptError := server.backend().ValidateRcpt(client.Envelope)
-						if rcptError != nil {
-							client.PopRcpt()
-							client.sendResponse(response.Canned.FailRcptCmd, " ", rcptError.Error())
-						} else {
-							client.sendResponse(response.Canned.SuccessRcptCmd)
-						}
+						client.sendResponse(r.SuccessRcptCmd)
 					}
 				}
 
-			case strings.Index(cmd, "RSET") == 0:
+			case cmdRSET.match(cmd):
 				client.resetTransaction()
-				client.sendResponse(response.Canned.SuccessResetCmd)
+				client.sendResponse(r.SuccessResetCmd)
 
-			case strings.Index(cmd, "VRFY") == 0:
-				client.sendResponse(response.Canned.SuccessVerifyCmd)
+			case cmdVRFY.match(cmd):
+				client.sendResponse(r.SuccessVerifyCmd)
 
-			case strings.Index(cmd, "NOOP") == 0:
-				client.sendResponse(response.Canned.SuccessNoopCmd)
+			case cmdNOOP.match(cmd):
+				client.sendResponse(r.SuccessNoopCmd)
 
-			case strings.Index(cmd, "QUIT") == 0:
-				client.sendResponse(response.Canned.SuccessQuitCmd)
+			case cmdQUIT.match(cmd):
+				client.sendResponse(r.SuccessQuitCmd)
 				client.kill()
 
-			case strings.Index(cmd, "DATA") == 0:
+			case cmdDATA.match(cmd):
 				if sc.AuthRequired && !client.authStore.IsAuthenticated {
 					client.sendResponse("554 5.7.1 Client host rejected: Access denied")
 					break
@@ -556,45 +591,45 @@ func (server *server) handleClient(client *client) {
 					break
 				}
 				if len(client.RcptTo) == 0 {
-					client.sendResponse(response.Canned.FailNoRecipientsDataCmd)
+					client.sendResponse(r.FailNoRecipientsDataCmd)
 					break
 				}
-				client.sendResponse(response.Canned.SuccessDataCmd)
+				client.sendResponse(r.SuccessDataCmd)
 				client.state = ClientData
 
-			case sc.TLS.StartTLSOn && strings.Index(cmd, "STARTTLS") == 0:
+			case sc.TLS.StartTLSOn && cmdSTARTTLS.match(cmd):
 
-				client.sendResponse(response.Canned.SuccessStartTLSCmd)
+				client.sendResponse(r.SuccessStartTLSCmd)
 				client.state = ClientStartTLS
 			default:
 				client.errors++
 				if client.errors >= MaxUnrecognizedCommands {
-					client.sendResponse(response.Canned.FailMaxUnrecognizedCmd)
+					client.sendResponse(r.FailMaxUnrecognizedCmd)
 					client.kill()
 				} else {
-					client.sendResponse(response.Canned.FailUnrecognizedCmd)
+					client.sendResponse(r.FailUnrecognizedCmd)
 				}
 			}
 
 		case ClientLogin:
 			switch client.authType {
 			case AuthLOGIN:
-				login, err := server.readCommand(client, sc.MaxSize)
+				login, err := s.readCommand(client, sc.MaxSize)
 				if err != nil {
-					fmt.Errorf("Error reading login")
+					err = fmt.Errorf("error reading login: %v", err)
 				}
 
-				client.login = login
+				client.login = string(login)
 				client.state = ClientPassword
 				client.sendResponse("334 UGFzc3dvcmQ6")
 			case AuthCRAMMD5:
-				authString, err := server.readCommand(client, sc.MaxSize)
+				authString, err := s.readCommand(client, sc.MaxSize)
 				if err != nil {
-					fmt.Errorf("Error reading crammd5 auth string")
+					err = fmt.Errorf("error reading crammd5 auth string: %v", err)
 				}
-				if server.authenticator.VerifyCRAMMD5(client.authStore.CRAMMD5challenge, authString) {
+				if s.authenticator.VerifyCRAMMD5(client.authStore.CRAMMD5challenge, string(authString)) {
 					client.authStore.IsAuthenticated = true
-					client.AuthorizedLogin = server.authenticator.ExtractLoginFromAuthString(authString)
+					client.AuthorizedLogin = s.authenticator.ExtractLoginFromAuthString(string(authString))
 					client.sendResponse("235 Authentication succeeded")
 				} else {
 					client.sendResponse("535 5.7.8 Error: authentication failed:")
@@ -603,13 +638,13 @@ func (server *server) handleClient(client *client) {
 			}
 
 		case ClientPassword:
-			password, err := server.readCommand(client, sc.MaxSize)
+			password, err := s.readCommand(client, sc.MaxSize)
 			if err != nil {
-				fmt.Errorf("Error reading password")
+				err = fmt.Errorf("Error reading password: %v", err)
 			}
-			client.password = password
-			if server.authenticator.VerifyLOGIN(client.login, client.password) {
-				client.AuthorizedLogin, err = server.authenticator.DecodeLogin(client.login)
+			client.password = string(password)
+			if s.authenticator.VerifyLOGIN(client.login, client.password) {
+				client.AuthorizedLogin, err = s.authenticator.DecodeLogin(client.login)
 				if err != nil {
 					fmt.Print(err)
 					client.sendResponse("535 5.7.0 Invalid login or password")
@@ -626,52 +661,52 @@ func (server *server) handleClient(client *client) {
 
 			// intentionally placed the limit 1MB above so that reading does not return with an error
 			// if the client goes a little over. Anything above will err
-			maxMailSize := int64(server.authenticator.GetMailSize(client.AuthorizedLogin, sc.MaxSize))
+			maxMailSize := int64(s.authenticator.GetMailSize(client.AuthorizedLogin, sc.MaxSize))
 			client.bufin.setLimit(maxMailSize + 1024000) // This a hard limit.
 
 			n, err := client.Data.ReadFrom(client.smtpReader.DotReader())
 			if n > sc.MaxSize {
-				err = fmt.Errorf("Maximum DATA size exceeded (%d)", sc.MaxSize)
+				err = fmt.Errorf("maximum DATA size exceeded (%d)", sc.MaxSize)
 			}
 			if err != nil {
 				if err == LineLimitExceeded {
-					client.sendResponse(response.Canned.FailReadLimitExceededDataCmd, " ", LineLimitExceeded.Error())
+					client.sendResponse(r.FailReadLimitExceededDataCmd, " ", LineLimitExceeded.Error())
 					client.kill()
 				} else if err == MessageSizeExceeded {
-					client.sendResponse(response.Canned.FailMessageSizeExceeded, " ", MessageSizeExceeded.Error())
+					client.sendResponse(r.FailMessageSizeExceeded, " ", MessageSizeExceeded.Error())
 					client.kill()
 				} else {
-					client.sendResponse(response.Canned.FailReadErrorDataCmd, " ", err.Error())
+					client.sendResponse(r.FailReadErrorDataCmd, " ", err.Error())
 					client.kill()
 				}
-				server.log().WithError(err).Warn("Error reading data")
+				s.log().WithError(err).Warn("Error reading data")
 				client.resetTransaction()
 				break
 			}
 
-			client.Envelope.Values["listen_interface"] = server.listenInterface
+			client.Envelope.Values["listen_interface"] = s.listenInterface
 
-			res := server.backend().Process(client.Envelope)
+			res := s.backend().Process(client.Envelope)
 			if res.Code() < 300 {
 				client.messagesSent++
 			}
 			client.sendResponse(res)
 			client.state = ClientCmd
-			if server.isShuttingDown() {
+			if s.isShuttingDown() {
 				client.state = ClientShutdown
 			}
 			client.resetTransaction()
 
 		case ClientStartTLS:
 			if !client.TLS && sc.TLS.StartTLSOn {
-				tlsConfig, ok := server.tlsConfigStore.Load().(*tls.Config)
+				tlsConfig, ok := s.tlsConfigStore.Load().(*tls.Config)
 				if !ok {
-					server.mainlog().Error("Failed to load *tls.Config")
+					s.mainlog().Error("Failed to load *tls.Config")
 				} else if err := client.upgradeToTLS(tlsConfig); err == nil {
 					advertiseTLS = ""
 					client.resetTransaction()
 				} else {
-					server.log().WithError(err).Warnf("[%s] Failed TLS handshake", client.RemoteIP)
+					s.log().WithError(err).Warnf("[%s] Failed TLS handshake", client.RemoteIP)
 					// Don't disconnect, let the client decide if it wants to continue
 				}
 			}
@@ -679,22 +714,22 @@ func (server *server) handleClient(client *client) {
 			client.state = ClientCmd
 		case ClientShutdown:
 			// shutdown state
-			client.sendResponse(response.Canned.ErrorShutdown)
+			client.sendResponse(r.ErrorShutdown)
 			client.kill()
 		}
 
 		if client.bufErr != nil {
-			server.log().WithError(client.bufErr).Debug("client could not buffer a response")
+			s.log().WithError(client.bufErr).Debug("client could not buffer a response")
 			return
 		}
 		// flush the response buffer
 		if client.bufout.Buffered() > 0 {
-			if server.log().IsDebug() {
-				server.log().Debugf("Writing response to client: \n%s", client.response.String())
+			if s.log().IsDebug() {
+				s.log().Debugf("Writing response to client: \n%s", client.response.String())
 			}
-			err := server.flushResponse(client)
+			err := s.flushResponse(client)
 			if err != nil {
-				server.log().WithError(err).Debug("error writing response")
+				s.log().WithError(err).Debug("error writing response")
 				return
 			}
 		}
@@ -703,23 +738,42 @@ func (server *server) handleClient(client *client) {
 }
 
 func (s *server) log() log.Logger {
-	if l, ok := s.logStore.Load().(log.Logger); ok {
+	return s.loadLog(&s.logStore)
+}
+
+func (s *server) mainlog() log.Logger {
+	return s.loadLog(&s.mainlogStore)
+}
+
+func (s *server) loadLog(value *atomic.Value) log.Logger {
+	if l, ok := value.Load().(log.Logger); ok {
 		return l
 	}
-	l, err := log.GetLogger(log.OutputStderr.String(), log.InfoLevel.String())
+	out := log.OutputStderr.String()
+	level := log.InfoLevel.String()
+	if value == &s.logStore {
+		if sc, ok := s.configStore.Load().(ServerConfig); ok && sc.LogFile != "" {
+			out = sc.LogFile
+		}
+		level = s.mainlog().GetLevel()
+	}
+
+	l, err := log.GetLogger(out, level)
 	if err == nil {
-		s.logStore.Store(l)
+		value.Store(l)
 	}
 	return l
 }
 
-func (s *server) mainlog() log.Logger {
-	if l, ok := s.mainlogStore.Load().(log.Logger); ok {
-		return l
+// defaultHost ensures that the host attribute is set, if addressed to Postmaster
+func (s *server) defaultHost(a *mail.Address) {
+	if a.Host == "" && a.IsPostmaster() {
+		sc := s.configStore.Load().(ServerConfig)
+		a.Host = sc.Hostname
+		if !s.allowsHost(a.Host) {
+			s.log().WithFields(
+				logrus.Fields{"hostname": sc.Hostname}).
+				Warn("the hostname is not present in AllowedHosts config setting")
+		}
 	}
-	l, err := log.GetLogger(log.OutputStderr.String(), log.InfoLevel.String())
-	if err == nil {
-		s.mainlogStore.Store(l)
-	}
-	return l
 }

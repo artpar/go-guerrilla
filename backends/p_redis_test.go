@@ -12,7 +12,7 @@ import (
 func TestRedisGeneric(t *testing.T) {
 
 	e := mail.NewEnvelope("127.0.0.1", 1)
-	e.RcptTo = append(e.RcptTo, mail.Address{"test", "grr.la"})
+	e.RcptTo = append(e.RcptTo, mail.Address{User: "test", Host: "grr.la"})
 
 	l, _ := log.GetLogger("./test_redis.log", "debug")
 	g, err := New(BackendConfig{
@@ -29,7 +29,12 @@ func TestRedisGeneric(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	defer g.Shutdown()
+	defer func() {
+		err := g.Shutdown()
+		if err != nil {
+			t.Error(err)
+		}
+	}()
 	if gateway, ok := g.(*BackendGateway); ok {
 		r := gateway.Process(e)
 		if strings.Index(r.String(), "250 2.0.0 OK") == -1 {
@@ -50,6 +55,8 @@ func TestRedisGeneric(t *testing.T) {
 		}
 	}
 
-	os.Remove("./test_redis.log")
+	if err := os.Remove("./test_redis.log"); err != nil {
+		t.Error(err)
+	}
 
 }

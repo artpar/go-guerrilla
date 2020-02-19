@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/spf13/cobra"
 
-	guerrilla "github.com/artpar/go-guerrilla"
+	"github.com/artpar/go-guerrilla"
 )
 
 var versionCmd = &cobra.Command{

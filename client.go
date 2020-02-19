@@ -4,15 +4,18 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"github.com/artpar/go-guerrilla/authenticators"
 	"net"
 	"net/textproto"
 	"sync"
 	"time"
 
-	"github.com/artpar/go-guerrilla/authenticators"
 	"github.com/artpar/go-guerrilla/log"
 	"github.com/artpar/go-guerrilla/mail"
+	"github.com/artpar/go-guerrilla/mail/rfc5321"
+	"github.com/artpar/go-guerrilla/response"
 )
 
 // ClientState indicates which part of the SMTP transaction a given client is in.
@@ -67,6 +70,7 @@ type client struct {
 	authStore authenticators.AuthStore
 	login     string
 	password  string
+	parser    rfc5321.Parser
 }
 
 // NewClient allocates a new client.
@@ -129,7 +133,7 @@ func (c *client) sendResponse(r ...interface{}) {
 // Transaction ends on:
 // -HELO/EHLO/REST command
 // -End of DATA command
-// TLS handhsake
+// TLS handshake
 func (c *client) resetTransaction() {
 	c.Envelope.ResetTransaction()
 }
@@ -138,8 +142,7 @@ func (c *client) resetTransaction() {
 // A transaction starts after a MAIL command gets issued by the client.
 // Call resetTransaction to end the transaction
 func (c *client) isInTransaction() bool {
-	isMailFromEmpty := c.MailFrom == (mail.Address{})
-	if isMailFromEmpty {
+	if len(c.MailFrom.User) == 0 && !c.MailFrom.NullPath {
 		return false
 	}
 	return true
@@ -156,19 +159,20 @@ func (c *client) isAlive() bool {
 }
 
 // setTimeout adjust the timeout on the connection, goroutine safe
-func (c *client) setTimeout(t time.Duration) {
+func (c *client) setTimeout(t time.Duration) (err error) {
 	defer c.connGuard.Unlock()
 	c.connGuard.Lock()
 	if c.conn != nil {
-		c.conn.SetDeadline(time.Now().Add(t * time.Second))
+		err = c.conn.SetDeadline(time.Now().Add(t * time.Second))
 	}
+	return
 }
 
 // closeConn closes a client connection, , goroutine safe
 func (c *client) closeConn() {
 	defer c.connGuard.Unlock()
 	c.connGuard.Lock()
-	c.conn.Close()
+	_ = c.conn.Close()
 	c.conn = nil
 }
 
@@ -195,9 +199,8 @@ func (c *client) getID() uint64 {
 
 // UpgradeToTLS upgrades a client connection to TLS
 func (c *client) upgradeToTLS(tlsConfig *tls.Config) error {
-	var tlsConn *tls.Conn
 	// wrap c.conn in a new TLS server side connection
-	tlsConn = tls.Server(c.conn, tlsConfig)
+	tlsConn := tls.Server(c.conn, tlsConfig)
 	// Call handshake here to get any handshake error before reading starts
 	err := tlsConn.Handshake()
 	if err != nil {
@@ -218,4 +221,39 @@ func getRemoteAddr(conn net.Conn) string {
 	} else {
 		return conn.RemoteAddr().Network()
 	}
+}
+
+type pathParser func([]byte) error
+
+func (c *client) parsePath(in []byte, p pathParser) (mail.Address, error) {
+	address := mail.Address{}
+	var err error
+	if len(in) > rfc5321.LimitPath {
+		return address, errors.New(response.Canned.FailPathTooLong.String())
+	}
+	if err = p(in); err != nil {
+		return address, errors.New(response.Canned.FailInvalidAddress.String())
+	} else if c.parser.NullPath {
+		// bounce has empty from address
+		address = mail.Address{}
+	} else if len(c.parser.LocalPart) > rfc5321.LimitLocalPart {
+		err = errors.New(response.Canned.FailLocalPartTooLong.String())
+	} else if len(c.parser.Domain) > rfc5321.LimitDomain {
+		err = errors.New(response.Canned.FailDomainTooLong.String())
+	} else {
+		address = mail.Address{
+			User:       c.parser.LocalPart,
+			Host:       c.parser.Domain,
+			ADL:        c.parser.ADL,
+			PathParams: c.parser.PathParams,
+			NullPath:   c.parser.NullPath,
+			Quoted:     c.parser.LocalPartQuotes,
+			IP:         c.parser.IP,
+		}
+	}
+	return address, err
+}
+
+func (s *server) rcptTo() (address mail.Address, err error) {
+	return address, err
 }

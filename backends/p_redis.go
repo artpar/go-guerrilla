@@ -67,7 +67,7 @@ func Redis() Decorator {
 		}
 		config = bcfg.(*RedisProcessorConfig)
 		if redisErr := redisClient.redisConnection(config.RedisInterface); redisErr != nil {
-			err := fmt.Errorf("Redis cannot connect, check your settings: %s", redisErr)
+			err := fmt.Errorf("redis cannot connect, check your settings: %s", redisErr)
 			return err
 		}
 		return nil
@@ -93,7 +93,7 @@ func Redis() Decorator {
 					var stringer fmt.Stringer
 					// a compressor was set
 					if c, ok := e.Values["zlib-compressor"]; ok {
-						stringer = c.(*compressor)
+						stringer = c.(*DataCompressor)
 					} else {
 						stringer = e
 					}
@@ -107,7 +107,7 @@ func Redis() Decorator {
 					if doErr != nil {
 						Log().WithError(doErr).Warn("Error while SETEX to redis")
 						result := NewResult(response.Canned.FailBackendTransaction)
-						return result, redisErr
+						return result, doErr
 					}
 					e.Values["redis"] = "redis" // the next processor will know to look in redis for the message data
 				} else {

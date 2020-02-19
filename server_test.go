@@ -1,6 +1,7 @@
 package guerrilla
 
 import (
+	"os"
 	"testing"
 
 	"bufio"
@@ -10,13 +11,13 @@ import (
 
 	"crypto/tls"
 	"fmt"
+	"io/ioutil"
+	"net"
+
 	"github.com/artpar/go-guerrilla/backends"
 	"github.com/artpar/go-guerrilla/log"
 	"github.com/artpar/go-guerrilla/mail"
 	"github.com/artpar/go-guerrilla/mocks"
-	"io/ioutil"
-	"net"
-	"os"
 )
 
 // getMockServerConfig gets a mock ServerConfig struct used for creating a new server
@@ -139,8 +140,62 @@ jDGZARZqGyrPeXi+RNe1cMvZCxAFy7gqEtWFLWWrp0gYNPvxkHhhQBrUcF+8T/Nf
 ug8tR8eSL1vGleONtFRBUVG7NbtjhBf9FhvPZcSRR10od/vWHku9E01i4xg=
 -----END CERTIFICATE-----`
 
+func truncateIfExists(filename string) error {
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		return os.Truncate(filename, 0)
+	}
+	return nil
+}
+func deleteIfExists(filename string) error {
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		return os.Remove(filename)
+	}
+	return nil
+}
+
+func cleanTestArtifacts(t *testing.T) {
+	if err := deleteIfExists("rootca.test.pem"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("client.test.key"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("client.test.pem"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("./tests/mail.guerrillamail.com.key.pem"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("./tests/mail.guerrillamail.com.cert.pem"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("./tests/different-go-guerrilla.pid"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("./tests/go-guerrilla.pid"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("./tests/go-guerrilla2.pid"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("./tests/pidfile.pid"); err != nil {
+		t.Error(err)
+	}
+	if err := deleteIfExists("./tests/pidfile2.pid"); err != nil {
+		t.Error(err)
+	}
+
+	if err := truncateIfExists("./tests/testlog"); err != nil {
+		t.Error(err)
+	}
+	if err := truncateIfExists("./tests/testlog2"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestTLSConfig(t *testing.T) {
 
+	defer cleanTestArtifacts(t)
 	if err := ioutil.WriteFile("rootca.test.pem", []byte(rootCAPK), 0644); err != nil {
 		t.Fatal("couldn't create rootca.test.pem file.", err)
 		return
@@ -167,7 +222,9 @@ func TestTLSConfig(t *testing.T) {
 			Protocols:      []string{"tls1.0", "tls1.2"},
 		},
 	})
-	s.configureSSL()
+	if err := s.configureTLS(); err != nil {
+		t.Error(err)
+	}
 
 	c := s.tlsConfigStore.Load().(*tls.Config)
 
@@ -176,7 +233,7 @@ func TestTLSConfig(t *testing.T) {
 	} else if c.CurvePreferences[0] != tls.CurveP521 && c.CurvePreferences[1] != tls.CurveP384 {
 		t.Error("c.CurvePreferences curves not setup")
 	}
-	if strings.Index(string(c.RootCAs.Subjects()[0]), "Mountain View") == -1 {
+	if !strings.Contains(string(c.RootCAs.Subjects()[0]), "Mountain View") {
 		t.Error("c.RootCAs not correctly set")
 	}
 	if c.ClientAuth != tls.NoClientCert {
@@ -203,15 +260,12 @@ func TestTLSConfig(t *testing.T) {
 		t.Error("PreferServerCipherSuites should be false")
 	}
 
-	os.Remove("rootca.test.pem")
-	os.Remove("client.test.key")
-	os.Remove("client.test.pem")
-
 }
 
 func TestHandleClient(t *testing.T) {
 	var mainlog log.Logger
 	var logOpenError error
+	defer cleanTestArtifacts(t)
 	sc := getMockServerConfig()
 	mainlog, logOpenError = log.GetLogger(sc.LogFile, "debug")
 	if logOpenError != nil {
@@ -231,10 +285,558 @@ func TestHandleClient(t *testing.T) {
 	line, _ := r.ReadLine()
 	//	fmt.Println(line)
 	w := textproto.NewWriter(bufio.NewWriter(conn.Client))
-	w.PrintfLine("HELO test.test.com")
+	if err := w.PrintfLine("HELO test.test.com"); err != nil {
+		t.Error(err)
+	}
 	line, _ = r.ReadLine()
 	//fmt.Println(line)
-	w.PrintfLine("QUIT")
+	if err := w.PrintfLine("QUIT"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	//fmt.Println("line is:", line)
+	expected := "221 2.0.0 Bye"
+	if strings.Index(line, expected) != 0 {
+		t.Error("expected", expected, "but got:", line)
+	}
+	wg.Wait() // wait for handleClient to exit
+}
+
+func TestGithubIssue197(t *testing.T) {
+	var mainlog log.Logger
+	var logOpenError error
+	defer cleanTestArtifacts(t)
+	sc := getMockServerConfig()
+	mainlog, logOpenError = log.GetLogger(sc.LogFile, "debug")
+	if logOpenError != nil {
+		mainlog.WithError(logOpenError).Errorf("Failed creating a logger for mock conn [%s]", sc.ListenInterface)
+	}
+	conn, server := getMockServerConn(sc, t)
+	server.backend().Start()
+	// we assume that 1.1.1.1 is a domain (ip-literal syntax is incorrect)
+	// [2001:DB8::FF00:42:8329] is an address literal
+	server.setAllowedHosts([]string{"1.1.1.1", "[2001:DB8::FF00:42:8329]"})
+
+	client := NewClient(conn.Server, 1, mainlog, mail.NewPool(5))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		server.handleClient(client)
+		wg.Done()
+	}()
+	// Wait for the greeting from the server
+	r := textproto.NewReader(bufio.NewReader(conn.Client))
+	line, _ := r.ReadLine()
+	//	fmt.Println(line)
+	w := textproto.NewWriter(bufio.NewWriter(conn.Client))
+	if err := w.PrintfLine("HELO test.test.com"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// Case 1
+	if err := w.PrintfLine("rcpt to: <hi@[1.1.1.1]>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if client.parser.IP == nil {
+		t.Error("[1.1.1.1] not parsed as address-liteal")
+	}
+
+	// case 2, should be parsed as domain
+	if err := w.PrintfLine("rcpt to: <hi@1.1.1.1>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if client.parser.IP != nil {
+		t.Error("1.1.1.1 should not be parsed as an IP (syntax requires IP addresses to be in braces, eg <hi@[1.1.1.1]>")
+	}
+
+	// case 3
+	// prefix ipv6 is case insensitive
+	if err := w.PrintfLine("rcpt to: <hi@[ipv6:2001:DB8::FF00:42:8329]>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if client.parser.IP == nil {
+		t.Error("[ipv6:2001:DB8::FF00:42:8329] should be parsed as an address-literal, it wasnt")
+	}
+
+	// case 4
+	if err := w.PrintfLine("rcpt to: <hi@[IPv6:2001:0db8:0000:0000:0000:ff00:0042:8329]>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if client.parser.Domain != "2001:DB8::FF00:42:8329" && client.parser.IP == nil {
+		t.Error("[IPv6:2001:0db8:0000:0000:0000:ff00:0042:8329] is same as 2001:DB8::FF00:42:8329, lol")
+	}
+
+	if err := w.PrintfLine("QUIT"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	//fmt.Println("line is:", line)
+	expected := "221 2.0.0 Bye"
+	if strings.Index(line, expected) != 0 {
+		t.Error("expected", expected, "but got:", line)
+	}
+	wg.Wait() // wait for handleClient to exit
+}
+
+var githubIssue198data string
+
+var customBackend = func() backends.Decorator {
+	return func(p backends.Processor) backends.Processor {
+		return backends.ProcessWith(
+			func(e *mail.Envelope, task backends.SelectTask) (backends.Result, error) {
+				if task == backends.TaskSaveMail {
+					githubIssue198data = e.DeliveryHeader + e.Data.String()
+				}
+				return p.Process(e, task)
+			})
+	}
+}
+
+// TestGithubIssue198 is an interesting test because it shows how to do an integration test for
+// a backend using a custom backend.
+func TestGithubIssue198(t *testing.T) {
+	var mainlog log.Logger
+	var logOpenError error
+	defer cleanTestArtifacts(t)
+	sc := getMockServerConfig()
+	mainlog, logOpenError = log.GetLogger(sc.LogFile, "debug")
+
+	backends.Svc.AddProcessor("custom", customBackend)
+
+	if logOpenError != nil {
+		mainlog.WithError(logOpenError).Errorf("Failed creating a logger for mock conn [%s]", sc.ListenInterface)
+	}
+	conn, server := getMockServerConn(sc, t)
+	be, err := backends.New(map[string]interface{}{
+		"save_process": "HeadersParser|Header|custom", "primary_mail_host": "example.com"},
+		mainlog)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	server.setBackend(be)
+	if err := server.backend().Start(); err != nil {
+		t.Error(err)
+		return
+	}
+
+	server.setAllowedHosts([]string{"1.1.1.1", "[2001:DB8::FF00:42:8329]"})
+
+	client := NewClient(conn.Server, 1, mainlog, mail.NewPool(5))
+	client.RemoteIP = "127.0.0.1"
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		server.handleClient(client)
+		wg.Done()
+	}()
+	// Wait for the greeting from the server
+	r := textproto.NewReader(bufio.NewReader(conn.Client))
+	line, _ := r.ReadLine()
+
+	w := textproto.NewWriter(bufio.NewWriter(conn.Client))
+	// Test with HELO greeting
+	line = sendMessage("HELO", true, w, t, line, r, err, client)
+	if !strings.Contains(githubIssue198data, " SMTPS ") {
+		t.Error("'with SMTPS' not present")
+	}
+
+	if !strings.Contains(githubIssue198data, "from 127.0.0.1") {
+		t.Error("'from 127.0.0.1' not present")
+	}
+
+	/////////////////////
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	// Test with EHLO
+	line, _ = r.ReadLine()
+	line = sendMessage("EHLO", true, w, t, line, r, err, client)
+	if !strings.Contains(githubIssue198data, " ESMTPS ") {
+		t.Error("'with ESMTPS' not present")
+	}
+	/////////////////////
+
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// Test with EHLO & no TLS
+
+	line = sendMessage("EHLO", false, w, t, line, r, err, client)
+
+	/////////////////////
+
+	if !strings.Contains(githubIssue198data, " ESMTP ") {
+		t.Error("'with ESTMP' not present")
+	}
+
+	if err := w.PrintfLine("QUIT"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	expected := "221 2.0.0 Bye"
+	if strings.Index(line, expected) != 0 {
+		t.Error("expected", expected, "but got:", line)
+	}
+	wg.Wait() // wait for handleClient to exit
+}
+
+func sendMessage(greet string, TLS bool, w *textproto.Writer, t *testing.T, line string, r *textproto.Reader, err error, client *client) string {
+	if err := w.PrintfLine(greet + " test.test.com"); err != nil {
+		t.Error(err)
+	}
+	for {
+		line, _ = r.ReadLine()
+		if strings.Index(line, "250 ") == 0 {
+			break
+		}
+		if strings.Index(line, "250") != 0 {
+			t.Error(err)
+		}
+	}
+
+	if err := w.PrintfLine("MAIL FROM: test@example.com>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if err := w.PrintfLine("RCPT TO: <hi@[ipv6:2001:DB8::FF00:42:8329]>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	client.Hashes = append(client.Hashes, "abcdef1526777763")
+	client.TLS = TLS
+	if err := w.PrintfLine("DATA"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if err := w.PrintfLine("Subject: Test subject\r\n\r\nHello Sir,\nThis is a test.\r\n."); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	return line
+}
+
+func TestGithubIssue199(t *testing.T) {
+	var mainlog log.Logger
+	var logOpenError error
+	defer cleanTestArtifacts(t)
+	sc := getMockServerConfig()
+	mainlog, logOpenError = log.GetLogger(sc.LogFile, "debug")
+	if logOpenError != nil {
+		mainlog.WithError(logOpenError).Errorf("Failed creating a logger for mock conn [%s]", sc.ListenInterface)
+	}
+	conn, server := getMockServerConn(sc, t)
+	server.backend().Start()
+
+	server.setAllowedHosts([]string{"grr.la", "fake.com", "[1.1.1.1]", "[2001:db8::8a2e:370:7334]", "saggydimes.test.com"})
+
+	client := NewClient(conn.Server, 1, mainlog, mail.NewPool(5))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		server.handleClient(client)
+		wg.Done()
+	}()
+	// Wait for the greeting from the server
+	r := textproto.NewReader(bufio.NewReader(conn.Client))
+	line, _ := r.ReadLine()
+	//	fmt.Println(line)
+	w := textproto.NewWriter(bufio.NewWriter(conn.Client))
+	if err := w.PrintfLine("HELO test"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// case 1
+	if err := w.PrintfLine(
+		"MAIL FROM: <\"  yo-- man wazz'''up? surprise surprise, this is POSSIBLE@fake.com \"@example.com>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	// [SPACE][SPACE]yo--[SPACE]man[SPACE]wazz'''up?[SPACE]surprise[SPACE]surprise,[SPACE]this[SPACE]is[SPACE]POSSIBLE@fake.com[SPACE]
+	if client.parser.LocalPart != "  yo-- man wazz'''up? surprise surprise, this is POSSIBLE@fake.com " {
+		t.Error("expecting local part: [  yo-- man wazz'''up? surprise surprise, this is POSSIBLE@fake.com ], got client.parser.LocalPart")
+	}
+	if !client.parser.LocalPartQuotes {
+		t.Error("was expecting client.parser.LocalPartQuotes true, got false")
+	}
+	// from should just as above but without angle brackets <>
+	if from := client.MailFrom.String(); from != "\"  yo-- man wazz'''up? surprise surprise, this is POSSIBLE@fake.com \"@example.com" {
+		t.Error("mail from was:", from)
+	}
+	if line != "250 2.1.0 OK" {
+		t.Error("line did not have: 250 2.1.0 OK, got", line)
+	}
+
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// case 2, address literal mailboxes
+	if err := w.PrintfLine("MAIL FROM: <hi@[1.1.1.1]>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// stringer should be aware its an ip and return the host part in angle brackets
+	if from := client.MailFrom.String(); from != "hi@[1.1.1.1]" {
+		t.Error("mail from was:", from)
+	}
+
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// case 3
+
+	if err := w.PrintfLine("MAIL FROM: <hi@[IPv6:2001:0db8:0000:0000:0000:8a2e:0370:7334]>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// stringer should be aware its an ip and return the host part in angle brackets, and ipv6 should be normalized
+	if from := client.MailFrom.String(); from != "hi@[2001:db8::8a2e:370:7334]" {
+		t.Error("mail from was:", from)
+	}
+
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// case 4
+	// rcpt to: <hi@[IPv6:2001:0db8:0000:0000:0000:ff00:0042:8329]>
+
+	if err := w.PrintfLine("MAIL FROM: <>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if err := w.PrintfLine("RCPT TO: <Postmaster>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// stringer should return an empty string
+	if from := client.MailFrom.String(); from != "" {
+		t.Error("mail from was:", from)
+	}
+
+	// note here the saggydimes.test.com was added because no host was specified in the RCPT TO command
+	if rcpt := client.RcptTo[0].String(); rcpt != "postmaster@saggydimes.test.com" {
+		t.Error("mail from was:", rcpt)
+	}
+
+	// additional cases
+
+	/*
+		user part:
+		" al\ph\a "@grr.la should be " alpha "@grr.la.
+		"alpha"@grr.la should be alpha@grr.la.
+		"alp\h\a"@grr.la should be alpha@grr.la.
+	*/
+
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if err := w.PrintfLine("RCPT TO: <\" al\\ph\\a \"@grr.la>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if client.RcptTo[0].User != " alpha " {
+		t.Error(client.RcptTo[0].User)
+	}
+
+	// the unnecessary \\ should be removed
+	if rcpt := client.RcptTo[0].String(); rcpt != "\" alpha \"@grr.la" {
+		t.Error(rcpt)
+	}
+
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if err := w.PrintfLine("RCPT TO: <\"alpha\"@grr.la>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// we don't need to quote, so stringer should return without the quotes
+	if rcpt := client.RcptTo[0].String(); rcpt != "alpha@grr.la" {
+		t.Error(rcpt)
+	}
+
+	if err := w.PrintfLine("RSET"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	if err := w.PrintfLine("RCPT TO: <\"a\\l\\pha\"@grr.la>"); err != nil {
+		t.Error(err)
+	}
+
+	line, _ = r.ReadLine()
+
+	// we don't need to quote, so stringer should return without the quotes
+	if rcpt := client.RcptTo[0].String(); rcpt != "alpha@grr.la" {
+		t.Error(rcpt)
+	}
+
+	if err := w.PrintfLine("QUIT"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	wg.Wait() // wait for handleClient to exit
+}
+
+func TestGithubIssue200(t *testing.T) {
+	var mainlog log.Logger
+	var logOpenError error
+	defer cleanTestArtifacts(t)
+	sc := getMockServerConfig()
+	mainlog, logOpenError = log.GetLogger(sc.LogFile, "debug")
+	if logOpenError != nil {
+		mainlog.WithError(logOpenError).Errorf("Failed creating a logger for mock conn [%s]", sc.ListenInterface)
+	}
+	conn, server := getMockServerConn(sc, t)
+	server.backend().Start()
+	server.setAllowedHosts([]string{"1.1.1.1", "[2001:DB8::FF00:42:8329]"})
+
+	client := NewClient(conn.Server, 1, mainlog, mail.NewPool(5))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		server.handleClient(client)
+		wg.Done()
+	}()
+	// Wait for the greeting from the server
+	r := textproto.NewReader(bufio.NewReader(conn.Client))
+	line, _ := r.ReadLine()
+	//	fmt.Println(line)
+	w := textproto.NewWriter(bufio.NewWriter(conn.Client))
+	if err := w.PrintfLine("HELO test\"><script>alert('hi')</script>test.com"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if line != "550 5.5.2 Syntax error" {
+		t.Error("line expected to be: 550 5.5.2 Syntax error, got", line)
+	}
+
+	if err := w.PrintfLine("HELO test.com"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if !strings.Contains(line, "250") {
+		t.Error("line did not have 250 code, got", line)
+	}
+	if err := w.PrintfLine("QUIT"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	//fmt.Println("line is:", line)
+	expected := "221 2.0.0 Bye"
+	if strings.Index(line, expected) != 0 {
+		t.Error("expected", expected, "but got:", line)
+	}
+	wg.Wait() // wait for handleClient to exit
+}
+
+func TestGithubIssue201(t *testing.T) {
+	var mainlog log.Logger
+	var logOpenError error
+	defer cleanTestArtifacts(t)
+	sc := getMockServerConfig()
+	mainlog, logOpenError = log.GetLogger(sc.LogFile, "debug")
+	if logOpenError != nil {
+		mainlog.WithError(logOpenError).Errorf("Failed creating a logger for mock conn [%s]", sc.ListenInterface)
+	}
+	conn, server := getMockServerConn(sc, t)
+	server.backend().Start()
+	// note that saggydimes.test.com is the hostname of the server, it comes form the config
+	// it will be used for rcpt to:<postmaster> which does not specify a host
+	server.setAllowedHosts([]string{"a.com", "saggydimes.test.com"})
+
+	client := NewClient(conn.Server, 1, mainlog, mail.NewPool(5))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		server.handleClient(client)
+		wg.Done()
+	}()
+	// Wait for the greeting from the server
+	r := textproto.NewReader(bufio.NewReader(conn.Client))
+	line, _ := r.ReadLine()
+	//	fmt.Println(line)
+	w := textproto.NewWriter(bufio.NewWriter(conn.Client))
+	if err := w.PrintfLine("HELO test"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+
+	// case 1
+	if err := w.PrintfLine("RCPT TO: <postMaStER@a.com>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if line != "250 2.1.5 OK" {
+		t.Error("line did not have: 250 2.1.5 OK, got", line)
+	}
+	// case 2
+	if err := w.PrintfLine("RCPT TO: <Postmaster@not-a.com>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if line != "454 4.1.1 Error: Relay access denied: not-a.com" {
+		t.Error("line is not:454 4.1.1 Error: Relay access denied: not-a.com, got", line)
+	}
+	// case 3 (no host specified)
+
+	if err := w.PrintfLine("RCPT TO: <poSTmAsteR>"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if line != "250 2.1.5 OK" {
+		t.Error("line is not:[250 2.1.5 OK], got", line)
+	}
+
+	// case 4
+	if err := w.PrintfLine("RCPT TO: <\"po\\ST\\mAs\\t\\eR\">"); err != nil {
+		t.Error(err)
+	}
+	line, _ = r.ReadLine()
+	if line != "250 2.1.5 OK" {
+		t.Error("line is not:[250 2.1.5 OK], got", line)
+	}
+	// the local part should be just "postmaster" (normalized)
+	if client.parser.LocalPart != "postmaster" {
+		t.Error("client.parser.LocalPart was not postmaster, got:", client.parser.LocalPart)
+	}
+
+	if client.parser.LocalPartQuotes {
+		t.Error("client.parser.LocalPartQuotes was true, expecting false")
+	}
+
+	if err := w.PrintfLine("QUIT"); err != nil {
+		t.Error(err)
+	}
 	line, _ = r.ReadLine()
 	//fmt.Println("line is:", line)
 	expected := "221 2.0.0 Bye"
@@ -247,6 +849,7 @@ func TestHandleClient(t *testing.T) {
 func TestXClient(t *testing.T) {
 	var mainlog log.Logger
 	var logOpenError error
+	defer cleanTestArtifacts(t)
 	sc := getMockServerConfig()
 	sc.XClientOn = true
 	mainlog, logOpenError = log.GetLogger(sc.LogFile, "debug")
@@ -267,10 +870,14 @@ func TestXClient(t *testing.T) {
 	line, _ := r.ReadLine()
 	//	fmt.Println(line)
 	w := textproto.NewWriter(bufio.NewWriter(conn.Client))
-	w.PrintfLine("HELO test.test.com")
+	if err := w.PrintfLine("HELO test.test.com"); err != nil {
+		t.Error(err)
+	}
 	line, _ = r.ReadLine()
 	//fmt.Println(line)
-	w.PrintfLine("XCLIENT ADDR=212.96.64.216 NAME=[UNAVAILABLE]")
+	if err := w.PrintfLine("XCLIENT ADDR=212.96.64.216 NAME=[UNAVAILABLE]"); err != nil {
+		t.Error(err)
+	}
 	line, _ = r.ReadLine()
 
 	if client.RemoteIP != "212.96.64.216" {
@@ -282,7 +889,9 @@ func TestXClient(t *testing.T) {
 	}
 
 	// try malformed input
-	w.PrintfLine("XCLIENT c")
+	if err := w.PrintfLine("XCLIENT c"); err != nil {
+		t.Error(err)
+	}
 	line, _ = r.ReadLine()
 
 	expected = "250 2.1.0 OK"
@@ -290,7 +899,9 @@ func TestXClient(t *testing.T) {
 		t.Error("expected", expected, "but got:", line)
 	}
 
-	w.PrintfLine("QUIT")
+	if err := w.PrintfLine("QUIT"); err != nil {
+		t.Error(err)
+	}
 	line, _ = r.ReadLine()
 	wg.Wait() // wait for handleClient to exit
 }
@@ -299,7 +910,7 @@ func TestXClient(t *testing.T) {
 // The transaction should wait until finished, and then test to see if we can do
 // a second transaction
 func TestGatewayTimeout(t *testing.T) {
-
+	defer cleanTestArtifacts(t)
 	bcfg := backends.BackendConfig{
 		"save_workers_size":   1,
 		"save_process":        "HeadersParser|Debugger",
@@ -330,24 +941,51 @@ func TestGatewayTimeout(t *testing.T) {
 		}
 		in := bufio.NewReader(conn)
 		str, err := in.ReadString('\n')
-		fmt.Fprint(conn, "HELO host\r\n")
+		if err != nil {
+			t.Error(err)
+		}
+		if _, err := fmt.Fprint(conn, "HELO host\r\n"); err != nil {
+			t.Error(err)
+		}
 		str, err = in.ReadString('\n')
 		// perform 2 transactions
 		// both should panic.
 		for i := 0; i < 2; i++ {
-			fmt.Fprint(conn, "MAIL FROM:<test@example.com>r\r\n")
-			str, err = in.ReadString('\n')
-			fmt.Fprint(conn, "RCPT TO:test@grr.la\r\n")
-			str, err = in.ReadString('\n')
-			fmt.Fprint(conn, "DATA\r\n")
-			str, err = in.ReadString('\n')
-			fmt.Fprint(conn, "Subject: Test subject\r\n")
-			fmt.Fprint(conn, "\r\n")
-			fmt.Fprint(conn, "A an email body\r\n")
-			fmt.Fprint(conn, ".\r\n")
+			if _, err := fmt.Fprint(conn, "MAIL FROM:<test@example.com>r\r\n"); err != nil {
+				t.Error(err)
+			}
+			if str, err = in.ReadString('\n'); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "RCPT TO:<test@grr.la>\r\n"); err != nil {
+				t.Error(err)
+			}
+			if str, err = in.ReadString('\n'); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "DATA\r\n"); err != nil {
+				t.Error(err)
+			}
+			if str, err = in.ReadString('\n'); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "Subject: Test subject\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "A an email body\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, ".\r\n"); err != nil {
+				t.Error(err)
+			}
 			str, err = in.ReadString('\n')
 			expect := "transaction timeout"
-			if strings.Index(str, expect) == -1 {
+			if err != nil {
+				t.Error(err)
+			} else if !strings.Contains(str, expect) {
 				t.Error("Expected the reply to have'", expect, "'but got", str)
 			}
 		}
@@ -359,6 +997,7 @@ func TestGatewayTimeout(t *testing.T) {
 
 // The processor will panic and gateway should recover from it
 func TestGatewayPanic(t *testing.T) {
+	defer cleanTestArtifacts(t)
 	bcfg := backends.BackendConfig{
 		"save_workers_size":   1,
 		"save_process":        "HeadersParser|Debugger",
@@ -388,37 +1027,66 @@ func TestGatewayPanic(t *testing.T) {
 			return
 		}
 		in := bufio.NewReader(conn)
-		str, err := in.ReadString('\n')
-		fmt.Fprint(conn, "HELO host\r\n")
-		str, err = in.ReadString('\n')
+		if _, err := in.ReadString('\n'); err != nil {
+			t.Error(err)
+		}
+		if _, err := fmt.Fprint(conn, "HELO host\r\n"); err != nil {
+			t.Error(err)
+		}
+		if _, err = in.ReadString('\n'); err != nil {
+			t.Error(err)
+		}
 		// perform 2 transactions
 		// both should timeout. The reason why 2 is because we want to make
 		// sure that the client waits until processing finishes, and the
 		// timeout event is captured.
 		for i := 0; i < 2; i++ {
-			fmt.Fprint(conn, "MAIL FROM:<test@example.com>r\r\n")
-			str, err = in.ReadString('\n')
-			fmt.Fprint(conn, "RCPT TO:test@grr.la\r\n")
-			str, err = in.ReadString('\n')
-			fmt.Fprint(conn, "DATA\r\n")
-			str, err = in.ReadString('\n')
-			fmt.Fprint(conn, "Subject: Test subject\r\n")
-			fmt.Fprint(conn, "\r\n")
-			fmt.Fprint(conn, "A an email body\r\n")
-			fmt.Fprint(conn, ".\r\n")
-			str, err = in.ReadString('\n')
-			expect := "storage failed"
-			if strings.Index(str, expect) == -1 {
-				t.Error("Expected the reply to have'", expect, "'but got", str)
+			if _, err := fmt.Fprint(conn, "MAIL FROM:<test@example.com>r\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err = in.ReadString('\n'); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "RCPT TO:<test@grr.la>\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err = in.ReadString('\n'); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "DATA\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err = in.ReadString('\n'); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "Subject: Test subject\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, "A an email body\r\n"); err != nil {
+				t.Error(err)
+			}
+			if _, err := fmt.Fprint(conn, ".\r\n"); err != nil {
+				t.Error(err)
+			}
+			if str, err := in.ReadString('\n'); err != nil {
+				t.Error(err)
+			} else {
+				expect := "storage failed"
+				if !strings.Contains(str, expect) {
+					t.Error("Expected the reply to have'", expect, "'but got", str)
+				}
 			}
 		}
-		_ = str
 		d.Shutdown()
 	}
 
 }
 
 func TestAllowsHosts(t *testing.T) {
+	defer cleanTestArtifacts(t)
 	s := server{}
 	allowedHosts := []string{
 		"spam4.me",
@@ -428,6 +1096,9 @@ func TestAllowsHosts(t *testing.T) {
 		"*.test",
 		"wild*.card",
 		"multiple*wild*cards.*",
+		"[::FFFF:C0A8:1]",          // ip4 in ipv6 format. It's actually 192.168.0.1
+		"[2001:db8::ff00:42:8329]", // same as 2001:0db8:0000:0000:0000:ff00:0042:8329
+		"[127.0.0.1]",
 	}
 	s.setAllowedHosts(allowedHosts)
 
@@ -448,6 +1119,19 @@ func TestAllowsHosts(t *testing.T) {
 		}
 	}
 
+	testTableIP := map[string]bool{
+
+		"192.168.0.1": true,
+		"2001:0db8:0000:0000:0000:ff00:0042:8329": true,
+		"127.0.0.1": true,
+	}
+
+	for host, allows := range testTableIP {
+		if res := s.allowsIp(net.ParseIP(host)); res != allows {
+			t.Error(host, ": expected", allows, "but got", res)
+		}
+	}
+
 	// only wildcard - should match anything
 	s.setAllowedHosts([]string{"*"})
 	if !s.allowsHost("match.me") {
@@ -464,6 +1148,3 @@ func TestAllowsHosts(t *testing.T) {
 	s.setAllowedHosts([]string{"grr.la", "example.com"})
 
 }
-
-// TODO
-// - test github issue #44 and #42

@@ -11,6 +11,7 @@ import (
 
 	"github.com/artpar/go-guerrilla/backends"
 	"github.com/artpar/go-guerrilla/log"
+	"time"
 )
 
 // AppConfig is the holder of the configuration of the app
@@ -34,27 +35,28 @@ type AppConfig struct {
 
 // ServerConfig specifies config options for a single server
 type ServerConfig struct {
-	// IsEnabled set to true to start the server, false will ignore it
-	IsEnabled bool `json:"is_enabled"`
-	// Hostname will be used in the server's reply to HELO/EHLO. If TLS enabled
-	// make sure that the Hostname matches the cert. Defaults to os.Hostname()
-	Hostname string `json:"host_name"`
-	// MaxSize is the maximum size of an email that will be accepted for delivery.
-	// Defaults to 10 Mebibytes
-	MaxSize int64 `json:"max_size"`
 	// TLS Configuration
 	TLS ServerTLSConfig `json:"tls,omitempty"`
-	// Timeout specifies the connection timeout in seconds. Defaults to 30
-	Timeout int `json:"timeout"`
-	// Listen interface specified in <ip>:<port> - defaults to 127.0.0.1:2525
-	ListenInterface string `json:"listen_interface"`
-
-	// MaxClients controls how many maxiumum clients we can handle at once.
-	// Defaults to 100
-	MaxClients int `json:"max_clients"`
 	// LogFile is where the logs go. Use path to file, or "stderr", "stdout" or "off".
 	// defaults to AppConfig.Log file setting
 	LogFile string `json:"log_file,omitempty"`
+	// Hostname will be used in the server's reply to HELO/EHLO. If TLS enabled
+	// make sure that the Hostname matches the cert. Defaults to os.Hostname()
+	// Hostname will also be used to fill the 'Host' property when the "RCPT TO" address is
+	// addressed to just <postmaster>
+	Hostname string `json:"host_name"`
+	// Listen interface specified in <ip>:<port> - defaults to 127.0.0.1:2525
+	ListenInterface string `json:"listen_interface"`
+	// MaxSize is the maximum size of an email that will be accepted for delivery.
+	// Defaults to 10 Mebibytes
+	MaxSize int64 `json:"max_size"`
+	// Timeout specifies the connection timeout in seconds. Defaults to 30
+	Timeout int `json:"timeout"`
+	// MaxClients controls how many maximum clients we can handle at once.
+	// Defaults to defaultMaxClients
+	MaxClients int `json:"max_clients"`
+	// IsEnabled set to true to start the server, false will ignore it
+	IsEnabled bool `json:"is_enabled"`
 	// XClientOn when using a proxy such as Nginx, XCLIENT command is used to pass the
 	// original client's IP address & client's HELO
 
@@ -64,17 +66,6 @@ type ServerConfig struct {
 }
 
 type ServerTLSConfig struct {
-
-	// StartTLSOn should we offer STARTTLS command. Cert must be valid.
-	// False by default
-	StartTLSOn bool `json:"start_tls_on,omitempty"`
-	// AlwaysOn run this server as a pure TLS server, i.e. SMTPS
-	AlwaysOn bool `json:"tls_always_on,omitempty"`
-	// PrivateKeyFile path to cert private key in PEM format.
-	PrivateKeyFile string `json:"private_key_file"`
-	// PublicKeyFile path to cert (public key) chain in PEM format.
-	PublicKeyFile string `json:"public_key_file"`
-
 	// TLS Protocols to use. [0] = min, [1]max
 	// Use Go's default if empty
 	Protocols []string `json:"protocols,omitempty"`
@@ -84,27 +75,39 @@ type ServerTLSConfig struct {
 	// TLS Curves to use.
 	// Use Go's default if empty
 	Curves []string `json:"curves,omitempty"`
+	// PrivateKeyFile path to cert private key in PEM format.
+	PrivateKeyFile string `json:"private_key_file"`
+	// PublicKeyFile path to cert (public key) chain in PEM format.
+	PublicKeyFile string `json:"public_key_file"`
 	// TLS Root cert authorities to use. "A PEM encoded CA's certificate file.
 	// Defaults to system's root CA file if empty
 	RootCAs string `json:"root_cas_file,omitempty"`
 	// declares the policy the server will follow for TLS Client Authentication.
 	// Use Go's default if empty
 	ClientAuthType string `json:"client_auth_type,omitempty"`
-	// controls whether the server selects the
-	// client's most preferred ciphersuite
-	PreferServerCipherSuites bool `json:"prefer_server_cipher_suites,omitempty"`
-
 	// The following used to watch certificate changes so that the TLS can be reloaded
-	_privateKeyFile_mtime int64
-	_publicKeyFile_mtime  int64
+	_privateKeyFileMtime int64
+	_publicKeyFileMtime  int64
+	// controls whether the server selects the
+	// client's most preferred cipher suite
+	PreferServerCipherSuites bool `json:"prefer_server_cipher_suites,omitempty"`
+	// StartTLSOn should we offer STARTTLS command. Cert must be valid.
+	// False by default
+	StartTLSOn bool `json:"start_tls_on,omitempty"`
+	// AlwaysOn run this server as a pure TLS server, i.e. SMTPS
+	AlwaysOn bool `json:"tls_always_on,omitempty"`
 }
 
 // https://golang.org/pkg/crypto/tls/#pkg-constants
 // Ciphers introduced before Go 1.7 are listed here,
 // ciphers since Go 1.8, see tls_go1.8.go
+// ....... since Go 1.13, see tls_go1.13.go
 var TLSCiphers = map[string]uint16{
 
-	// // Note: Generally avoid using CBC unless for compatibility
+	// Note: Generally avoid using CBC unless for compatibility
+	// The following ciphersuites are not configurable for TLS 1.3
+	// see tls_go1.13.go for a list of ciphersuites always used in TLS 1.3
+
 	"TLS_RSA_WITH_3DES_EDE_CBC_SHA":        tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
 	"TLS_RSA_WITH_AES_128_CBC_SHA":         tls.TLS_RSA_WITH_AES_128_CBC_SHA,
 	"TLS_RSA_WITH_AES_256_CBC_SHA":         tls.TLS_RSA_WITH_AES_256_CBC_SHA,
@@ -124,13 +127,12 @@ var TLSCiphers = map[string]uint16{
 	"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384":   tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 	"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384": tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 
-	// Include to prevent downgrade attacks
-	"TLS_FALLBACK_SCSV": tls.TLS_FALLBACK_SCSV,
+	// see tls_go1.13 for new TLS 1.3 ciphersuites
+	// Note that TLS 1.3 ciphersuites are not configurable
 }
 
 // https://golang.org/pkg/crypto/tls/#pkg-constants
 var TLSProtocols = map[string]uint16{
-	"ssl3.0": tls.VersionSSL30,
 	"tls1.0": tls.VersionTLS10,
 	"tls1.1": tls.VersionTLS11,
 	"tls1.2": tls.VersionTLS12,
@@ -151,6 +153,11 @@ var TLSClientAuthTypes = map[string]tls.ClientAuthType{
 	"VerifyClientCertIfGiven":    tls.VerifyClientCertIfGiven,
 	"RequireAndVerifyClientCert": tls.RequireAndVerifyClientCert,
 }
+
+const defaultMaxClients = 100
+const defaultTimeout = 30
+const defaultInterface = "127.0.0.1:2525"
+const defaultMaxSize = int64(10 << 20) // 10 Mebibytes
 
 // Unmarshalls json data into AppConfig struct and any other initialization of the struct
 // also does validation, returns error if validation failed or something went wrong
@@ -173,9 +180,11 @@ func (c *AppConfig) Load(jsonBytes []byte) error {
 		}
 	}
 
-	// read the timestamps for the ssl keys, to determine if they need to be reloaded
+	// read the timestamps for the TLS keys, to determine if they need to be reloaded
 	for i := 0; i < len(c.Servers); i++ {
-		c.Servers[i].loadTlsKeyTimestamps()
+		if err := c.Servers[i].loadTlsKeyTimestamps(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -222,8 +231,8 @@ func (c *AppConfig) EmitChangeEvents(oldConfig *AppConfig, app Guerrilla) {
 
 	}
 	// remove any servers that don't exist anymore
-	for _, oldserver := range oldServers {
-		app.Publish(EventConfigServerRemove, oldserver)
+	for _, oldServer := range oldServers {
+		app.Publish(EventConfigServerRemove, oldServer)
 	}
 }
 
@@ -279,9 +288,9 @@ func (c *AppConfig) setDefaults() error {
 		sc.ListenInterface = defaultInterface
 		sc.IsEnabled = true
 		sc.Hostname = h
-		sc.MaxClients = 100
-		sc.Timeout = 30
-		sc.MaxSize = 10 << 20 // 10 Mebibytes
+		sc.MaxClients = defaultMaxClients
+		sc.Timeout = defaultTimeout
+		sc.MaxSize = defaultMaxSize
 		c.Servers = append(c.Servers, sc)
 	} else {
 		// make sure each server has defaults correctly configured
@@ -290,16 +299,16 @@ func (c *AppConfig) setDefaults() error {
 				c.Servers[i].Hostname = h
 			}
 			if c.Servers[i].MaxClients == 0 {
-				c.Servers[i].MaxClients = 100
+				c.Servers[i].MaxClients = defaultMaxClients
 			}
 			if c.Servers[i].Timeout == 0 {
-				c.Servers[i].Timeout = 20
+				c.Servers[i].Timeout = defaultTimeout
 			}
 			if c.Servers[i].MaxSize == 0 {
-				c.Servers[i].MaxSize = 10 << 20 // 10 Mebibytes
+				c.Servers[i].MaxSize = defaultMaxSize // 10 Mebibytes
 			}
 			if c.Servers[i].ListenInterface == "" {
-				return errors.New(fmt.Sprintf("Listen interface not specified for server at index %d", i))
+				return fmt.Errorf("listen interface not specified for server at index %d", i)
 			}
 			if c.Servers[i].LogFile == "" {
 				c.Servers[i].LogFile = c.LogFile
@@ -401,22 +410,29 @@ func (sc *ServerConfig) emitChangeEvents(oldServer *ServerConfig, app Guerrilla)
 	}
 }
 
-// Loads in timestamps for the ssl keys
+// Loads in timestamps for the TLS keys
 func (sc *ServerConfig) loadTlsKeyTimestamps() error {
 	var statErr = func(iface string, err error) error {
-		return errors.New(
-			fmt.Sprintf(
-				"could not stat key for server [%s], %s",
-				iface,
-				err.Error()))
+		return fmt.Errorf(
+			"could not stat key for server [%s], %s",
+			iface,
+			err.Error())
+	}
+	if sc.TLS.PrivateKeyFile == "" {
+		sc.TLS._privateKeyFileMtime = time.Now().Unix()
+		return nil
+	}
+	if sc.TLS.PublicKeyFile == "" {
+		sc.TLS._publicKeyFileMtime = time.Now().Unix()
+		return nil
 	}
 	if info, err := os.Stat(sc.TLS.PrivateKeyFile); err == nil {
-		sc.TLS._privateKeyFile_mtime = info.ModTime().Unix()
+		sc.TLS._privateKeyFileMtime = info.ModTime().Unix()
 	} else {
 		return statErr(sc.ListenInterface, err)
 	}
 	if info, err := os.Stat(sc.TLS.PublicKeyFile); err == nil {
-		sc.TLS._publicKeyFile_mtime = info.ModTime().Unix()
+		sc.TLS._publicKeyFileMtime = info.ModTime().Unix()
 	} else {
 		return statErr(sc.ListenInterface, err)
 	}
@@ -435,8 +451,7 @@ func (sc *ServerConfig) Validate() error {
 			errs = append(errs, errors.New("PrivateKeyFile is empty"))
 		}
 		if _, err := tls.LoadX509KeyPair(sc.TLS.PublicKeyFile, sc.TLS.PrivateKeyFile); err != nil {
-			errs = append(errs,
-				errors.New(fmt.Sprintf("cannot use TLS config for [%s], %v", sc.ListenInterface, err)))
+			errs = append(errs, fmt.Errorf("cannot use TLS config for [%s], %v", sc.ListenInterface, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -449,7 +464,7 @@ func (sc *ServerConfig) Validate() error {
 // Gets the timestamp of the TLS certificates. Returns a unix time of when they were last modified
 // when the config was read. We use this info to determine if TLS needs to be re-loaded.
 func (stc *ServerTLSConfig) getTlsKeyTimestamps() (int64, int64) {
-	return stc._privateKeyFile_mtime, stc._publicKeyFile_mtime
+	return stc._privateKeyFileMtime, stc._publicKeyFileMtime
 }
 
 // Returns value changes between struct a & struct b.
@@ -503,7 +518,7 @@ func getChanges(a interface{}, b interface{}) map[string]interface{} {
 // only able to convert int, bool, slice-of-strings and string; not recursive
 // slices are marshal'd to json for convenient comparison later
 func structtomap(obj interface{}) map[string]interface{} {
-	ret := make(map[string]interface{}, 0)
+	ret := make(map[string]interface{})
 	v := reflect.ValueOf(obj)
 	t := v.Type()
 	for index := 0; index < v.NumField(); index++ {
