@@ -170,3 +170,22 @@ func TestListenerStatusesDisabledAndConcurrentStartup(t *testing.T) {
 		t.Fatalf("disabled: %#v", statuses)
 	}
 }
+
+func TestListenerStatusesStartupFailure(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	d := &Daemon{Config: &AppConfig{LogFile: "off", Servers: []ServerConfig{{ListenInterface: occupied.Addr().String(), Hostname: "localhost", IsEnabled: true}}}}
+	d.AddAuthenticator(func(backends.BackendConfig) authenticators.Authenticator { return &loginAuthenticator{} })
+	if err := d.Start(); err == nil {
+		d.Shutdown()
+		t.Fatal("occupied listener did not fail startup")
+	}
+	defer d.Shutdown()
+	statuses := d.ListenerStatuses()
+	if len(statuses) != 1 || statuses[0].State != "failed" || statuses[0].ErrorCode != "listen_failed" || statuses[0].BoundAddress != "" {
+		t.Fatalf("failed startup: %#v", statuses)
+	}
+}
