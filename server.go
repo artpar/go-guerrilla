@@ -40,6 +40,8 @@ const (
 	ServerStateRunning
 	// Server could not start due to an error
 	ServerStateStartError
+	ServerStateStarting
+	ServerStateStopping
 )
 
 // Server listens for SMTP clients on the port specified in its config
@@ -54,6 +56,9 @@ type server struct {
 	closedListener  chan bool
 	hosts           allowedHosts // stores map[string]bool for faster lookup
 	state           int
+	statusMu        sync.RWMutex
+	changedAt       time.Time
+	errorCode       string
 	// If log changed after a config reload, newLogStore stores the value here until it's safe to change it
 	logStore      atomic.Value
 	mainlogStore  atomic.Value
@@ -96,6 +101,7 @@ func newServer(sc *ServerConfig, b backends.Backend, a authenticators.Authentica
 		closedListener:  make(chan bool, 1),
 		listenInterface: sc.ListenInterface,
 		state:           ServerStateNew,
+		changedAt:       time.Now().UTC(),
 		envelopePool:    mail.NewPool(sc.MaxClients),
 		authenticator:   a,
 	}
@@ -117,6 +123,7 @@ func newServer(sc *ServerConfig, b backends.Backend, a authenticators.Authentica
 	server.setConfig(sc)
 	server.setTimeout(sc.Timeout)
 	if err := server.configureTLS(); err != nil {
+		server.setState(ServerStateStartError, "tls_configuration_failed")
 		return server, err
 	}
 	return server, nil
@@ -203,7 +210,9 @@ func (s *server) setTimeout(seconds int) {
 
 // goroutine safe config store
 func (s *server) setConfig(sc *ServerConfig) {
-	s.configStore.Store(*sc)
+	config := *sc
+	config.AuthTypes = append([]string(nil), sc.AuthTypes...)
+	s.configStore.Store(config)
 }
 
 // goroutine safe
@@ -237,16 +246,19 @@ func (s *server) Start(startWG *sync.WaitGroup) error {
 	var clientID uint64
 	clientID = 0
 
+	s.setState(ServerStateStarting, "")
 	listener, err := net.Listen("tcp", s.listenInterface)
+	s.statusMu.Lock()
 	s.listener = listener
+	s.statusMu.Unlock()
 	if err != nil {
+		s.setState(ServerStateStartError, "listen_failed")
 		startWG.Done() // don't wait for me
-		s.state = ServerStateStartError
 		return fmt.Errorf("[%s] Cannot listen on port: %s ", s.listenInterface, err.Error())
 	}
 
 	s.log().Infof("Listening on TCP %s", s.listenInterface)
-	s.state = ServerStateRunning
+	s.setState(ServerStateRunning, "")
 	startWG.Done() // start successful, don't wait for me
 
 	for {
@@ -260,7 +272,12 @@ func (s *server) Start(startWG *sync.WaitGroup) error {
 				s.log().Infof("shutting down pool [%s]", s.listenInterface)
 				s.clientPool.ShutdownState()
 				s.clientPool.ShutdownWait()
-				s.state = ServerStateStopped
+				if s.getState() != ServerStateStopping {
+					s.setState(ServerStateStartError, "accept_failed")
+					s.closedListener <- true
+					return err
+				}
+				s.setState(ServerStateStopped, "")
 				s.closedListener <- true
 				return nil
 			}
@@ -287,9 +304,13 @@ func (s *server) Start(startWG *sync.WaitGroup) error {
 }
 
 func (s *server) Shutdown() {
-	if s.listener != nil {
+	s.statusMu.RLock()
+	listener := s.listener
+	s.statusMu.RUnlock()
+	if listener != nil {
+		s.setState(ServerStateStopping, "")
 		// This will cause Start function to return, by causing an error on listener.Accept
-		_ = s.listener.Close()
+		_ = listener.Close()
 		// wait for the listener to listener.Accept
 		<-s.closedListener
 		// At this point Start will exit and close down the pool
@@ -297,7 +318,7 @@ func (s *server) Shutdown() {
 		s.clientPool.ShutdownState()
 		// listener already closed, wait for clients to exit
 		s.clientPool.ShutdownWait()
-		s.state = ServerStateStopped
+		s.setState(ServerStateStopped, "")
 	}
 }
 

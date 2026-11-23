@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"io/ioutil"
+	"sync"
 	"time"
 
 	"github.com/artpar/go-guerrilla/authenticators"
@@ -22,7 +23,8 @@ type Daemon struct {
 	Authenticator authenticators.AuthenticatorCreator
 
 	// Guerrilla will be managed through the API
-	g Guerrilla
+	g        Guerrilla
+	statusMu sync.RWMutex
 
 	configLoadTime time.Time
 	subs           []deferredSub
@@ -46,6 +48,8 @@ func (d *Daemon) AddAuthenticator(authenticator authenticators.AuthenticatorCrea
 // Starts the daemon, initializing d.Config, d.Logger and d.Backend with defaults
 // can only be called once through the lifetime of the program
 func (d *Daemon) Start() (err error) {
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
 	if d.g == nil {
 		if d.Config == nil {
 			d.Config = &AppConfig{}
