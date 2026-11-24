@@ -472,17 +472,20 @@ func (s *server) handleClient(client *client) {
 					advertiseAuthType,
 					advertiseEnhancedStatusCodes,
 					help)
-				// .NET library fix - note the trailing space
-			case strings.Index(cmdString, "AUTH LOGIN ") == 0:
-				client.login = cmdString[len("AUTH LOGIN "):]
-				client.state = ClientPassword
-				client.sendResponse("334 UGFzc3dvcmQ6")
-			case strings.Index(cmdString, "AUTH LOGIN") == 0:
+			case cmdString == "AUTH LOGIN" || strings.HasPrefix(cmdString, "AUTH LOGIN "):
 				if !sc.IsAuthTypeAllowed("LOGIN") {
 					client.sendResponse("500 5.5.1 Invalid command")
+					break
+				}
+				client.authType = AuthLOGIN
+				if len(input) > len("AUTH LOGIN") {
+					// Command matching is case-insensitive, but base64 credentials
+					// must retain every byte of the original input.
+					client.login = string(input[len("AUTH LOGIN "):])
+					client.state = ClientPassword
+					client.sendResponse("334 UGFzc3dvcmQ6")
 				} else {
 					client.state = ClientLogin
-					client.authType = AuthLOGIN
 					client.sendResponse("334 VXNlcm5hbWU6")
 				}
 
