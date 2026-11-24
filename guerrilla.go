@@ -123,6 +123,8 @@ func New(ac *AppConfig, b backends.Backend, a authenticators.AuthenticatorCreato
 
 // Instantiate servers
 func (g *guerrilla) makeServers() error {
+	g.guard.Lock()
+	defer g.guard.Unlock()
 	g.mainlog().Debug("making servers")
 	var errs Errors
 	for _, sc := range g.Config.Servers {
@@ -291,7 +293,7 @@ func (g *guerrilla) subscribeEvents() {
 	// start a server that already exists in the config and has been enabled
 	events[EventConfigServerStart] = serverEvent(func(sc *ServerConfig) {
 		if server, err := g.findServer(sc.ListenInterface); err == nil {
-			if server.state == ServerStateStopped || server.state == ServerStateNew {
+			if server.getState() == ServerStateStopped || server.getState() == ServerStateNew {
 				g.mainlog().Infof("Starting server [%s]", server.listenInterface)
 				err := g.Start()
 				if err != nil {
@@ -304,7 +306,7 @@ func (g *guerrilla) subscribeEvents() {
 	// stop running a server
 	events[EventConfigServerStop] = serverEvent(func(sc *ServerConfig) {
 		if server, err := g.findServer(sc.ListenInterface); err == nil {
-			if server.state == ServerStateRunning {
+			if server.getState() == ServerStateRunning {
 				server.Shutdown()
 				g.mainlog().Infof("Server [%s] stopped.", sc.ListenInterface)
 			}
@@ -461,6 +463,7 @@ func (g *guerrilla) Start() error {
 	// channel for reading errors
 	errs := make(chan error, len(g.servers))
 	var startWG sync.WaitGroup
+	var attempted []*server
 
 	// start servers, send any errors back to errs channel
 	for ListenInterface := range g.servers {
@@ -468,11 +471,12 @@ func (g *guerrilla) Start() error {
 			// not enabled
 			continue
 		}
-		if g.servers[ListenInterface].state != ServerStateNew &&
-			g.servers[ListenInterface].state != ServerStateStopped {
+		if g.servers[ListenInterface].getState() != ServerStateNew &&
+			g.servers[ListenInterface].getState() != ServerStateStopped {
 			continue
 		}
 		startWG.Add(1)
+		attempted = append(attempted, g.servers[ListenInterface])
 		go func(s *server) {
 			g.mainlog().Infof("Starting: %s", s.listenInterface)
 			if err := s.Start(&startWG); err != nil {
@@ -483,11 +487,11 @@ func (g *guerrilla) Start() error {
 	// wait for all servers to start (or fail)
 	startWG.Wait()
 
-	// close, then read any errors
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			startErrors = append(startErrors, err)
+	// A failed listener signals readiness before Start returns its error.
+	// Read its result rather than closing a channel while it may still send.
+	for _, s := range attempted {
+		if s.getState() == ServerStateStartError {
+			startErrors = append(startErrors, <-errs)
 		}
 	}
 	if len(startErrors) > 0 {
@@ -499,12 +503,14 @@ func (g *guerrilla) Start() error {
 func (g *guerrilla) Shutdown() {
 
 	// shut down the servers first
-	g.mapServers(func(s *server) {
-		if s.state == ServerStateRunning {
+	var servers []*server
+	g.mapServers(func(s *server) { servers = append(servers, s) })
+	for _, s := range servers {
+		if s.getState() == ServerStateRunning {
 			s.Shutdown()
 			g.mainlog().Infof("shutdown completed for [%s]", s.listenInterface)
 		}
-	})
+	}
 
 	g.guard.Lock()
 	defer func() {
